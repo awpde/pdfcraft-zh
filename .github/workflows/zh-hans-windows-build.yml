@@ -289,6 +289,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # 必须显式指定仓库：本工作流是直接拉上游源码编译的，运行目录本身
+          # 不是 git 仓库（checkout 到了 src/ 和 craft-fonts/ 子目录），
+          # 不指定的话 gh 会因「not a git repository」而失败。
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.resolve.outputs.release_tag }}
           REF: ${{ needs.resolve.outputs.ref }}
           SHA: ${{ needs.resolve.outputs.sha }}
@@ -319,11 +323,12 @@ jobs:
             echo "PdfCraft 采用 MIT OR Apache-2.0 双许可，字体附带的 OFL 许可文件已随便携版一并放出。"
           } > "$notes"
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
             echo "Release $TAG 已存在，覆盖其中的产物。"
-            gh release upload "$TAG" src/dist/release/*.msi src/dist/release/*.zip --clobber
+            gh release upload "$TAG" --repo "$GH_REPO" src/dist/release/*.msi src/dist/release/*.zip --clobber
           else
             gh release create "$TAG" \
+              --repo "$GH_REPO" \
               --title "PdfCraft 简体中文版 ${BUILD_VERSION} (${SHA:0:7})" \
               --notes-file "$notes" \
               --latest \
