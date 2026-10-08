@@ -1,0 +1,333 @@
+# ---------------------------------------------------------------------------
+# 从上游源码构建「简体中文」版 PdfCraft 的 Windows 安装包（MSI + 便携版 zip）
+#
+# 为什么需要这个：PdfCraft 把界面译文用 include_str!() 编译进二进制，
+# 所以界面是不是中文，只取决于「你编译的是哪个 commit」。官方 v0.2.1 里
+# 只有 English / 日本語；上游 main 分支已经有完整简体中文（zh-hans 词条）。
+#
+# 这个工作流不依赖当前仓库里的任何代码 —— 它直接拉取上游源码来编译，
+# 所以放在 fork 里、或者放在一个空仓库里，效果都一样，也不用跟上游同步代码。
+#
+# 用法：仓库 → Actions → 左侧选「构建简体中文版 (Windows)」→ Run workflow
+# ---------------------------------------------------------------------------
+
+name: 构建简体中文版 (Windows)
+
+on:
+  # 手动触发：想要哪个版本就构建哪个版本
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: '上游分支或 tag。main = 最新开发版（含简体中文）；也可填 v0.2.2 这类 tag'
+        required: true
+        default: 'main'
+      version_suffix:
+        description: '版本后缀，用来和官方版文件名区分开（MSI 的产品版本号仍是纯数字）'
+        required: true
+        default: 'zh.1'
+      make_release:
+        description: '构建完成后自动创建 Release，方便直接下载'
+        type: boolean
+        default: true
+
+  # 自动跟版：每天 UTC 22:00（北京时间次日 06:00）检查上游是否发了带中文的新版本
+  schedule:
+    - cron: '0 22 * * *'
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM: storytold/pdfcraft
+  # craft-fonts 提供中日韩字形（含 noto-sans-cjk-sc）。上游每次发版都会嵌入它，
+  # 这里锁定同一个 commit 以保证字体与官方版一致。craft-fonts 更新后可自行改这里。
+  CRAFT_FONTS_REPO: storytold/craft-fonts
+  CRAFT_FONTS_REF: abb83316d96aa59c1cf64784289e378fe9fa5695
+  # 界面译文所在的文件。没有它就说明这个版本是纯英文，直接跳过构建。
+  ZH_CATALOG: crates/ui-egui/src/i18n/zh-hans.tsv
+
+concurrency:
+  group: zh-hans-windows
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: 确定构建目标
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.r.outputs.ref }}
+      sha: ${{ steps.r.outputs.sha }}
+      short_sha: ${{ steps.r.outputs.short_sha }}
+      version_suffix: ${{ steps.r.outputs.version_suffix }}
+      release_tag: ${{ steps.r.outputs.release_tag }}
+      should_build: ${{ steps.r.outputs.should_build }}
+      make_release: ${{ steps.r.outputs.make_release }}
+      reason: ${{ steps.r.outputs.reason }}
+    steps:
+      - name: 解析分支 / 版本并校验中文词条
+        id: r
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REF: ${{ inputs.upstream_ref }}
+          INPUT_SUFFIX: ${{ inputs.version_suffix }}
+          INPUT_RELEASE: ${{ inputs.make_release }}
+        run: |
+          set -uo pipefail
+
+          skip() {
+            echo "$1"
+            {
+              echo "should_build=false"
+              echo "reason=$1"
+              echo "ref=${ref:-}"
+              echo "sha=${sha:-}"
+              echo "short_sha=${short:-}"
+              echo "version_suffix=${suffix:-zh.1}"
+              echo "release_tag="
+              echo "make_release=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          ref=""; sha=""; short=""
+
+          if [ -n "${INPUT_REF:-}" ]; then
+            # ---- 手动触发 ----
+            ref="$INPUT_REF"
+            suffix="${INPUT_SUFFIX:-zh.1}"
+            make_release="${INPUT_RELEASE:-true}"
+            reason="手动构建 ref=$ref"
+          else
+            # ---- 定时触发：跟随上游最新 Release ----
+            ref="$(gh api "repos/$UPSTREAM/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            suffix="zh.1"
+            make_release="true"
+            if [ -z "$ref" ]; then
+              skip "上游还没有 Release，跳过"
+            fi
+            reason="定时跟版：上游最新 Release $ref"
+          fi
+
+          sha="$(gh api "repos/$UPSTREAM/commits/$ref" --jq .sha 2>/dev/null || true)"
+          if [ -z "$sha" ]; then
+            skip "找不到上游 ref '$ref'"
+          fi
+          short="${sha:0:7}"
+
+          # 关键校验：这个 ref 到底有没有简体中文词条
+          if ! gh api "repos/$UPSTREAM/contents/$ZH_CATALOG?ref=$ref" >/dev/null 2>&1; then
+            echo "::notice::上游 ref '$ref' 不含 $ZH_CATALOG，构建出来仍是英文界面，已跳过。"
+            echo "::notice::官方最新 Release 通常属于这种情况；请改用 main 分支，或等上游发版。"
+            skip "ref '$ref' 不含简体中文词条，跳过构建"
+          fi
+
+          # Release 标签：定时跟版按上游 tag 去重；手动构建带上 commit 短哈希
+          safe_ref="$(printf '%s' "$ref" | tr '/' '-')"
+          if [ -n "${INPUT_REF:-}" ]; then
+            release_tag="zh-hans-${safe_ref}-${short}"
+          else
+            release_tag="zh-hans-${safe_ref}"
+          fi
+
+          {
+            echo "should_build=true"
+            echo "reason=$reason"
+            echo "ref=$ref"
+            echo "sha=$sha"
+            echo "short_sha=$short"
+            echo "version_suffix=$suffix"
+            echo "release_tag=$release_tag"
+            echo "make_release=$make_release"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### 中文版构建目标"
+            echo ""
+            echo "- 上游 ref：\`$ref\`"
+            echo "- commit：\`$sha\`"
+            echo "- 版本后缀：\`$suffix\`"
+            echo "- Release 标签：\`$release_tag\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  keepalive:
+    name: 保活（防止定时构建被 GitHub 停用）
+    # 公开仓库连续 60 天没有任何提交时，GitHub 会「悄悄」停用定时任务，不通知。
+    # 而这个仓库平时不会产生提交（编译用的代码是从上游现拉的），正好会踩中这条规则。
+    # 所以定时任务每次运行时顺便看一眼：距上次提交超过 50 天就补一个空提交，把计时清零。
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 距上次提交超过 50 天则补一个空提交
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          last="$(gh api "repos/${{ github.repository }}/commits?per_page=1" --jq '.[0].commit.committer.date' 2>/dev/null || true)"
+          if [ -z "$last" ]; then
+            echo "::warning::读不到最近提交时间，跳过保活"
+            exit 0
+          fi
+          days=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 86400 ))
+          echo "最近一次提交在 $days 天前（$last）"
+          if [ "$days" -lt 50 ]; then
+            echo "无需保活。"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: 保活提交，避免定时构建被 GitHub 停用 [skip ci]"
+          git push
+          echo "已补空提交，60 天计时已清零。"
+
+  build:
+    name: 构建 Windows x64 中文安装包
+    needs: resolve
+    if: needs.resolve.outputs.should_build == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: 说明
+        run: echo "构建 ${{ needs.resolve.outputs.reason }}"
+
+      - name: 拉取上游源码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          path: src
+          fetch-depth: 1
+
+      - name: 拉取 craft-fonts（中日韩字形，缺失会导致中文显示成方块）
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRAFT_FONTS_REPO }}
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: craft-fonts
+
+      - name: 安装 Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: 缓存 cargo 产物（大幅缩短重复构建时间）
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src -> target
+          key: zh-hans-windows-x64
+
+      - name: 校验中文词条确实存在
+        shell: bash
+        working-directory: src
+        env:
+          CATALOG: ${{ env.ZH_CATALOG }}
+        run: |
+          set -euo pipefail
+          test -s "$CATALOG" || { echo "::error::缺少 $CATALOG，构建结果不会是中文"; exit 1; }
+          echo "中文词条行数：$(grep -c '' "$CATALOG")"
+          if grep -q '菜单' "$CATALOG"; then
+            echo "已确认词条内含中文字符"
+          else
+            echo "::error::$CATALOG 看起来不含中文，已中止"; exit 1
+          fi
+
+      - name: 安装 WiX 5（用于生成 MSI）
+        shell: pwsh
+        run: dotnet tool install --global wix --version 5.0.2
+
+      # 这里把版本号写进 $GITHUB_ENV：后续所有步骤（含 package.ps1）都能读到，
+      # 而 ${{ env.X }} 这种写法取不到运行时生成的值，所以不要在这之后用 env 上下文引用它。
+      - name: 生成带后缀的版本号
+        shell: bash
+        working-directory: src
+        env:
+          SUFFIX: ${{ needs.resolve.outputs.version_suffix }}
+        run: |
+          set -euo pipefail
+          base="$(grep -A5 '^\[workspace.package\]' Cargo.toml | grep -m1 '^version' | sed 's/.*"\(.*\)".*/\1/')"
+          if [ -z "$base" ]; then echo "::error::无法从 Cargo.toml 读取版本号"; exit 1; fi
+          echo "BUILD_VERSION=${base}-${SUFFIX}" >> "$GITHUB_ENV"
+          echo "PDFCRAFT_VERSION=${base}-${SUFFIX}" >> "$GITHUB_ENV"
+          {
+            echo "### 构建版本"
+            echo ""
+            echo "- 完整版本号：\`${base}-${SUFFIX}\`"
+            echo "- MSI 产品版本号：\`${base}\`（MSI 只接受纯数字，后缀只体现在文件名上）"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 编译并打包（调用官方 package.ps1：MSI + 便携版 zip）
+        shell: pwsh
+        working-directory: src
+        env:
+          PDFCRAFT_BUILD_SHA: ${{ needs.resolve.outputs.sha }}
+          # 嵌入 craft-fonts，并让缺字体直接报错而不是静默跳过
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: '1'
+        run: ./packaging/windows/package.ps1 -Arch x64
+
+      - name: 列出产物
+        shell: bash
+        working-directory: src
+        run: ls -la dist/release/
+
+      - name: 上传为 Actions 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfcraft-zh-hans-${{ needs.resolve.outputs.short_sha }}-windows-x64
+          path: src/dist/release/*
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: 创建 / 更新 Release
+        if: needs.resolve.outputs.make_release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+          REF: ${{ needs.resolve.outputs.ref }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -uo pipefail
+
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "PdfCraft 简体中文版（Windows x64）"
+            echo ""
+            echo "由上游源码自动编译，界面译文已编译进二进制，无需任何额外语言包。"
+            echo ""
+            echo "- 源码来源：\`${UPSTREAM} @ ${REF}\`"
+            echo "- commit：\`${SHA}\`"
+            echo "- 完整版本号：\`${BUILD_VERSION}\`（后缀只出现在文件名里）"
+            echo "- 已嵌入 craft-fonts（含 Noto Sans CJK SC），中文不会渲染成方块"
+            echo "- 未做代码签名：首次运行 Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可"
+            echo "- 与官方 v0.2.1 同版本装过也没关系：MSI 的 \`AllowSameVersionUpgrades\` 会直接替换旧版"
+            echo "- ⚠️ 软件里的「帮助 → 检查更新」指向的是**官方**发布页（那里是英文包），它只适合用来判断上游有没有发新版；**下载请回到本仓库的 Releases 页面**，否则会装回英文版"
+            echo ""
+            echo "## 安装后如何切换到中文"
+            echo ""
+            echo "一般无需操作：应用会自动跟随系统语言，简体中文系统直接就是中文界面。"
+            echo "如果仍是英文，进入 **菜单 → 编辑 → 首选项… → 界面语言 → 简体中文**。"
+            echo ""
+            echo "## 许可证"
+            echo ""
+            echo "PdfCraft 采用 MIT OR Apache-2.0 双许可，字体附带的 OFL 许可文件已随便携版一并放出。"
+          } > "$notes"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，覆盖其中的产物。"
+            gh release upload "$TAG" src/dist/release/*.msi src/dist/release/*.zip --clobber
+          else
+            gh release create "$TAG" \
+              --title "PdfCraft 简体中文版 ${BUILD_VERSION} (${SHA:0:7})" \
+              --notes-file "$notes" \
+              --latest \
+              src/dist/release/*.msi src/dist/release/*.zip
+          fi
+
+          echo "下载地址：${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
