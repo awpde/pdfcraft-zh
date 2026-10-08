@@ -39,10 +39,12 @@ permissions:
 
 env:
   UPSTREAM: storytold/pdfcraft
-  # craft-fonts 提供中日韩字形（含 noto-sans-cjk-sc）。上游每次发版都会嵌入它，
-  # 这里锁定同一个 commit 以保证字体与官方版一致。craft-fonts 更新后可自行改这里。
+  # craft-fonts 提供中日韩字形。**必须是含 Noto Sans CJK SC（Hans 脚本）的较新版本**：
+  # 旧版本（例如 v0.2.1 发布时所用的 abb83316…）只带 4 款日文字体，用它编译出来的
+  # 程序会用日文字体渲染中文，简体独有的字（单/导/签/编/删/显/线…）没有字形 →
+  # 界面显示成一个个方块。已改为含简中字体的版本，并在下面加了两道校验防止再犯。
   CRAFT_FONTS_REPO: storytold/craft-fonts
-  CRAFT_FONTS_REF: abb83316d96aa59c1cf64784289e378fe9fa5695
+  CRAFT_FONTS_REF: 8dcdacd5153e64560d109541a47d806f26f048c0
   # 界面译文所在的文件。没有它就说明这个版本是纯英文，直接跳过构建。
   ZH_CATALOG: crates/ui-egui/src/i18n/zh-hans.tsv
 
@@ -210,6 +212,38 @@ jobs:
           ref: ${{ env.CRAFT_FONTS_REF }}
           path: craft-fonts
 
+      # 第二道防呆（第一道在编译前、第三道在编译后）：
+      # 字体清单里必须有 Hans（简体中文）字体，否则后面编出来的界面就是满屏方块。
+      # 这一步只要几秒，能在浪费 20 分钟编译之前就拦下来。
+      - name: 校验字体清单含简体中文字体
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="craft-fonts/fonts/manifest.txt"
+          test -s "$manifest" || { echo "::error::找不到字体清单 $manifest"; exit 1; }
+
+          echo "craft-fonts 字体清单："
+          grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$' \
+            | awk -F' *[|] *' '{ printf "  %-18s %-8s scripts=%s\n", $1, $2, $4 }'
+
+          ok=1
+          if ! grep -q 'Noto Sans CJK SC' "$manifest"; then
+            echo "  缺少字体：Noto Sans CJK SC"
+            ok=0
+          fi
+          if ! grep -q 'Hans' "$manifest"; then
+            echo "  清单里没有任何 Hans（简体中文）脚本的字体"
+            ok=0
+          fi
+
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::craft-fonts 里没有简体中文字体，编译出来的界面中文会显示成方块。"
+            echo "::error::请把工作流顶部的 CRAFT_FONTS_REF 换成含 Noto Sans CJK SC 的较新 commit"
+            echo "::error::（在 craft-fonts 仓库的 fonts/manifest.txt 里可以看到）。"
+            exit 1
+          fi
+          echo "✅ 清单含简体中文字体，可以继续"
+
       - name: 安装 Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -270,6 +304,33 @@ jobs:
           CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
           CRAFT_FONTS_REQUIRED: '1'
         run: ./packaging/windows/package.ps1 -Arch x64
+
+      # 第三道防呆：直接检查编译出来的 exe 里有没有嵌进简中字体。
+      # 原理：build.rs 会把字体清单生成成 Rust 源码 —— CraftFont { family: "Noto Sans CJK SC", .. }，
+      # 所以字体族名以 UTF-8 字符串字面量形式存在于 exe 中，可直接做字节查找。
+      # 没有它就意味着界面中文会变成方块，宁可让构建失败也不发布这种包。
+      - name: 校验 exe 内确实嵌入了简体中文字体
+        shell: bash
+        working-directory: src
+        run: |
+          set -euo pipefail
+          exe="target/windows-package/x64/pdfcraft.exe"
+          if [ ! -f "$exe" ]; then
+            exe="$(find target/windows-package -name pdfcraft.exe -type f 2>/dev/null | head -1)"
+          fi
+          test -n "$exe" && test -f "$exe" || { echo "::error::找不到编译出的 pdfcraft.exe"; exit 1; }
+          echo "检查 $exe（$(du -h "$exe" | cut -f1)）内嵌字体："
+
+          for f in "BIZ UDPGothic" "Shippori Mincho" "Noto Sans CJK SC"; do
+            if LC_ALL=C grep -a -q -F "$f" "$exe"; then echo "  ✅ $f"; else echo "  ❌ $f"; fi
+          done
+
+          if ! LC_ALL=C grep -a -q -F "Noto Sans CJK SC" "$exe"; then
+            echo "::error::exe 里没有嵌入 Noto Sans CJK SC —— 中文会显示成方块，已中止发布。"
+            echo "::error::常见原因：craft-fonts 版本过旧（缺 Hans 字体）。请检查 CRAFT_FONTS_REF。"
+            exit 1
+          fi
+          echo "✅ 简体中文字体已嵌入，中文可正常显示"
 
       - name: 列出产物
         shell: bash
