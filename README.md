@@ -5,6 +5,25 @@
 编译出**界面为简体中文**的 Windows 安装包，并发布到本仓库的
 [Releases](../../releases) 页面。
 
+## ⚠️ 非官方构建声明
+
+本仓库产出的是**非官方第三方构建**，**不是官方发布**，与原项目作者不存在隶属、
+赞助或背书关系。
+
+- 程序主体为原作者（ArtCraft Team and the PdfCraft contributors）的作品，
+  采用 **MIT OR Apache-2.0** 双许可
+  （[LICENSE-MIT](https://github.com/storytold/pdfcraft/blob/main/LICENSE-MIT)、
+  [LICENSE-APACHE](https://github.com/storytold/pdfcraft/blob/main/LICENSE-APACHE)）。
+- 本仓库**只修改构建配置，未修改程序源码**：
+  1. 界面简体中文字体改为随包嵌入 HarmonyOS Sans SC（上游官方 Windows 包缺失该字体，
+     会导致简体中文显示成方块）；
+  2. 该字体的脚本声明为 `Hans,Jpan,Latn`，使其同时参与 PDF 内文字替换
+     （否则简体独有字会报 `Japanese fallback font has no glyph for U+XXXX`）；
+  3. 安装界面新增「选择安装位置」。
+- 名称 `PdfCraft` 仅用于说明本软件来源，不构成对其名称或商标的任何主张。
+- 随每个 Release 一并分发的 `LICENSE-MIT.txt`、`LICENSE-APACHE.txt`、`NOTICE.txt`
+  是上游许可证与声明**原文**；`UNOFFICIAL-BUILD-zh-CN.txt` 说明本构建具体改了什么。
+
 ## 为什么需要它
 
 PdfCraft 把界面译文用 `include_str!()` **编译进二进制**，所以界面是不是中文，
@@ -38,5 +57,21 @@ PdfCraft 把界面译文用 `include_str!()` **编译进二进制**，所以界�
   可能提示「未知发布者」，点「更多信息 → 仍要运行」即可。
 - 软件里的 **帮助 → 检查更新** 指向的是**官方**发布页（英文包），
   适合用来判断上游有没有发新版，但**不要用它下载**，请回到本仓库 Releases。
-- PdfCraft 采用 MIT OR Apache-2.0 双许可，字体（craft-fonts）附带的 OFL 许可文件
-  已随便携版一并放出。
+- 本仓库仅修改构建配置，未修改上游源码；上游更新后无需手动同步本仓库。
+
+## 许可证、署名与改动声明
+
+PdfCraft 采用 **MIT OR Apache-2.0** 双许可。每个 Release 都附带：
+
+| 文件 | 内容 |
+|---|---|
+| `LICENSE-MIT.txt`、`LICENSE-APACHE.txt` | 上游许可证全文 |
+| `NOTICE.txt` | 上游版权声明、商标说明与第三方组件许可清单 |
+| `UNOFFICIAL-BUILD-zh-CN.txt` | 本构建的改动说明（非官方声明）|
+
+便携版 zip 内同时含 `LICENSE-MIT`、`LICENSE-APACHE`、`README.md` 与内嵌字体的许可文件。
+
+**界面中文字体署名**：本构建嵌入了 **HarmonyOS Sans 字体**，由 Huawei Device Co., Ltd.
+授权，未经修改地随程序分发，许可全文见便携版内的 `OFL-harmonyos-sans-sc.txt`。
+
+> HarmonyOS Sans fonts are licensed from Huawei Device Co., Ltd.
