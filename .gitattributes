@@ -1,0 +1,4 @@
+# 保持补丁文件的字节不变（LF 行尾）。
+# 本仓库没有这个声明时，GitHub Actions 的 Windows runner 会在 checkout 时把文本文件
+# 转成 CRLF，导致 overrides/cjk.patch 与上游的 LF 源文件行尾不一致，git apply 失败。
+*.patch -text
