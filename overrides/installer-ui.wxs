@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original, text-only native MSI dialogs. No third-party UI artwork or custom-action DLLs.
+     Full UI gets welcome (with the desktop-shortcut checkbox)/progress/outcome screens; /qn and /qb stay unattended.
+
+     简体中文版附加改动（相对上游 packaging/windows/installer-ui.wxs）：
+       1. 新增「选择安装位置」能力：欢迎页多一个可编辑的安装路径 + “Browse...” 按钮，
+          按钮打开一个新的目录浏览对话框（InstallLocationBrowser）。
+       2. 为此声明 WIXUI_INSTALLDIR 并把 INSTALLFOLDER 标记为 secure —— 否则用户在
+          未提权的界面上选的路径，在提权执行安装时会被 Windows Installer 丢掉。
+       3. 除以上外，其余对话框、控件与文案与上游完全一致：
+          上游的 packaging/windows/test-msi.ps1 会逐项核对界面元素
+          （桌面快捷方式复选框、Finish 标签、完成页文案等），改文案会让构建自检失败。 -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <UI Id="PdfcraftInstallerUI">
+      <TextStyle Id="InstallerNormal" FaceName="Segoe UI" Size="9" />
+      <TextStyle Id="InstallerTitle" FaceName="Segoe UI" Size="12" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="InstallerNormal" />
+
+      <!-- ==== 简体中文版：安装位置自定义 ==== -->
+      <!-- 值必须是「目录 ID」而不是路径：下面所有目录控件的 Indirect="yes" 就是靠它定位目录。 -->
+      <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+      <!-- 浏览对话框内部用这个属性传递「要浏览哪个目录」，写法照抄 WiX 官方 WixUI。 -->
+      <Property Id="_BrowseProperty" Value="INSTALLFOLDER" />
+      <!-- 关键：让用户选的路径能穿过提权边界，到达真正执行安装的那个进程。 -->
+      <Property Id="INSTALLFOLDER" Secure="yes" />
+
+      <Dialog Id="InstallWelcome" Width="370" Height="215" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Install [ProductName]" />
+        <Control Id="Description" Type="Text" X="20" Y="50" Width="330" Height="32"
+            Text="Setup will install [ProductName] for all users and add it to the Start menu. You can change the install location below." />
+
+        <!-- 安装位置：可直接编辑，也可按 Browse 选目录 -->
+        <Control Id="LocationLabel" Type="Text" X="20" Y="88" Width="330" Height="12" TabSkip="no"
+            Text="Install &amp;location:" />
+        <Control Id="LocationPath" Type="PathEdit" X="20" Y="102" Width="238" Height="18"
+            Property="WIXUI_INSTALLDIR" Indirect="yes" />
+        <Control Id="LocationBrowse" Type="PushButton" X="266" Y="102" Width="82" Height="18" Text="&amp;Browse...">
+          <Publish Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1" />
+          <Publish Event="SpawnDialog" Value="InstallLocationBrowser" Order="2" />
+        </Control>
+
+        <Control Id="DesktopShortcut" Type="CheckBox" X="20" Y="128" Width="330" Height="17"
+            Property="INSTALLDESKTOPSHORTCUT" CheckBoxValue="1" Text="Create a &amp;desktop shortcut" />
+        <Control Id="Install" Type="PushButton" X="195" Y="180" Width="75" Height="23" Default="yes" ElevationShield="yes" Text="&amp;Install">
+          <Publish Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="280" Y="180" Width="70" Height="23" Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+
+      <!-- ==== 简体中文版：目录浏览对话框（结构照抄 WiX 官方 BrowseDlg，去掉图标/位图装饰）====
+           确定：SetTargetPath [_BrowseProperty] 把选中路径应用到目录。
+           取消：先 Reset 丢弃改动，再关闭——因为下面的控件是 Indirect 直接编辑目录目标的。 -->
+      <Dialog Id="InstallLocationBrowser" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Text="{\InstallerTitle}Change install location" />
+        <Control Id="ComboLabel" Type="Text" X="20" Y="50" Width="60" Height="12" TabSkip="no" Text="Look &amp;in:" />
+        <Control Id="DirectoryCombo" Type="DirectoryCombo" X="82" Y="47" Width="228" Height="80"
+            Property="_BrowseProperty" Indirect="yes" Fixed="yes" Remote="yes" Removable="yes">
+          <Subscribe Event="IgnoreChange" Attribute="IgnoreChange" />
+        </Control>
+        <Control Id="Up" Type="PushButton" X="314" Y="47" Width="36" Height="18" Text="&amp;Up">
+          <Publish Event="DirectoryListUp" Value="0" />
+        </Control>
+        <Control Id="DirectoryList" Type="DirectoryList" X="20" Y="75" Width="330" Height="98"
+            Property="_BrowseProperty" Indirect="yes" Sunken="yes" TabSkip="no" />
+        <Control Id="PathLabel" Type="Text" X="20" Y="180" Width="330" Height="12" TabSkip="no" Text="Folder &amp;name:" />
+        <Control Id="PathEdit" Type="PathEdit" X="20" Y="194" Width="330" Height="18"
+            Property="_BrowseProperty" Indirect="yes" />
+        <Control Id="OK" Type="PushButton" X="195" Y="232" Width="75" Height="23" Default="yes" Text="OK">
+          <Publish Event="SetTargetPath" Value="[_BrowseProperty]" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="280" Y="232" Width="70" Height="23" Cancel="yes" Text="Cancel">
+          <Publish Event="Reset" Value="0" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="InstallMaintenance" Width="370" Height="180" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Maintain [ProductName]" />
+        <Control Id="Description" Type="Text" X="20" Y="55" Width="330" Height="70"
+            Text="[ProductName] is already installed. Choose Repair to restore missing files and shortcuts, or Remove to uninstall it." />
+        <Control Id="Repair" Type="PushButton" X="110" Y="145" Width="75" Height="23" Default="yes" ElevationShield="yes" Text="&amp;Repair">
+          <Publish Property="REINSTALL" Value="ALL" Order="1" />
+          <Publish Property="REINSTALLMODE" Value="amus" Order="2" />
+          <Publish Event="EndDialog" Value="Return" Order="3" />
+        </Control>
+        <Control Id="Remove" Type="PushButton" X="195" Y="145" Width="75" Height="23" ElevationShield="yes" Text="R&amp;emove">
+          <Publish Property="REMOVE" Value="ALL" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="280" Y="145" Width="70" Height="23" Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="InstallProgress" Width="370" Height="180" Title="[ProductName] Setup" Modeless="yes">
+        <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Setting up [ProductName]" />
+        <!-- No ActionText table is authored: subscribing would blank this message (#305). -->
+        <Control Id="Status" Type="Text" X="20" Y="60" Width="330" Height="40" Text="Please wait while setup completes." />
+        <Control Id="Progress" Type="ProgressBar" X="20" Y="110" Width="330" Height="15" ProgressBlocks="yes">
+          <Subscribe Event="SetProgress" Attribute="Progress" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="280" Y="145" Width="70" Height="23" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="ConfirmCancel" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="ConfirmCancel" Width="300" Height="110" Title="Cancel setup">
+        <Control Id="Description" Type="Text" X="20" Y="20" Width="260" Height="35" Text="Cancel [ProductName] setup?" />
+        <Control Id="Yes" Type="PushButton" X="130" Y="70" Width="70" Height="23" Text="&amp;Yes">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+        <Control Id="No" Type="PushButton" X="210" Y="70" Width="70" Height="23" Default="yes" Cancel="yes" Text="&amp;No">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="InstallComplete" Width="370" Height="180" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Setup completed successfully" />
+        <Control Id="Description" Type="Text" X="20" Y="55" Width="330" Height="70"
+            Text="[ProductName] setup has completed successfully. Click Finish to close this window." />
+        <Control Id="Finish" Type="PushButton" X="280" Y="145" Width="70" Height="23" Default="yes" Cancel="yes" Text="&amp;Finish">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="InstallFailed" Width="370" Height="180" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Setup failed" />
+        <Control Id="Description" Type="Text" X="20" Y="55" Width="330" Height="70"
+            Text="[ProductName] setup could not be completed. Resolve the reported error and run setup again." />
+        <Control Id="Finish" Type="PushButton" X="280" Y="145" Width="70" Height="23" Default="yes" Cancel="yes" Text="&amp;Finish">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="InstallCancelled" Width="370" Height="180" Title="[ProductName] Setup">
+        <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Setup cancelled" />
+        <Control Id="Description" Type="Text" X="20" Y="55" Width="330" Height="70"
+            Text="[ProductName] setup was cancelled. Run setup again when you are ready." />
+        <Control Id="Finish" Type="PushButton" X="280" Y="145" Width="70" Height="23" Default="yes" Cancel="yes" Text="&amp;Finish">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+
+      <!-- Shown by Windows Installer (Restart Manager) when an upgrade or repair must replace files
+           that a running PdfCraft holds open. OK closes those programs (MSIRMSHUTDOWN=2) and
+           continues; Cancel ends setup. -->
+      <Dialog Id="MsiRMFilesInUse" Width="370" Height="200" Title="[ProductName] Setup" KeepModeless="yes">
+        <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="25" Text="{\InstallerTitle}Files in use" />
+        <Control Id="Description" Type="Text" X="20" Y="45" Width="330" Height="30"
+            Text="These programs are using files that setup needs to update. Click OK to close them and continue, or Cancel to stop setup." />
+        <Control Id="List" Type="ListBox" X="20" Y="80" Width="330" Height="55" Property="FileInUseProcess" Sunken="yes" TabSkip="yes" />
+        <Control Id="OK" Type="PushButton" X="195" Y="165" Width="75" Height="23" Default="yes" Text="OK">
+          <Publish Property="MSIRMSHUTDOWN" Value="2" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="280" Y="165" Width="70" Height="23" Cancel="yes" Text="Cancel">
+          <Publish Event="EndDialog" Value="Exit" />
+        </Control>
+      </Dialog>
+
+      <InstallUISequence>
+        <Show Dialog="InstallWelcome" Before="InstallMaintenance" Condition="UILevel = 5 AND NOT Installed" />
+        <Show Dialog="InstallMaintenance" Before="InstallProgress" Condition="UILevel = 5 AND Installed AND NOT REMOVE AND NOT REINSTALL" />
+        <Show Dialog="InstallProgress" Before="ExecuteAction" Condition="UILevel = 5" />
+        <Show Dialog="InstallComplete" OnExit="success" Condition="UILevel = 5" />
+        <Show Dialog="InstallFailed" OnExit="error" Condition="UILevel = 5" />
+        <Show Dialog="InstallCancelled" OnExit="cancel" Condition="UILevel = 5" />
+      </InstallUISequence>
+    </UI>
+  </Fragment>
+</Wix>
