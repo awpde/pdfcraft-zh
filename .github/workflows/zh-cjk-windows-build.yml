@@ -245,8 +245,10 @@ jobs:
           test -f "$patch_file" || { echo "::error::本仓库缺少 $patch_file"; exit 1; }
 
           # 不吞 stderr，让 git apply 的真实报错直接显示在日志里，方便排查。
-          if git -C src apply --check "$patch_file"; then
-            git -C src apply "$patch_file"
+          # --ignore-whitespace：即使 patch 文件 checkout 时被转成 CRLF（本仓库补了
+          # .gitattributes 的 *.patch -text 后理论上不会），也能与上游 LF 源文件匹配。
+          if git -C src apply --check --ignore-whitespace "$patch_file"; then
+            git -C src apply --ignore-whitespace "$patch_file"
             echo "✅ 已应用 CJK 修复补丁（新增中文文字不再显示为问号）"
             grep -q "draw_cjk" src/crates/edit/src/added.rs && echo "   已确认 added.rs 含 draw_cjk" || { echo "::error::补丁应用后未找到 draw_cjk"; exit 1; }
           else
