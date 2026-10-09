@@ -292,6 +292,40 @@ jobs:
           test -s "craft-fonts/fonts/$ZH_FONT_DIR/OFL.txt" || { echo "::error::缺少字体许可协议 OFL.txt"; exit 1; }
           echo "✅ 简体中文字体 = $ZH_FONT_FAMILY（唯一 Hans 字体，许可协议已就位）"
 
+      # 上游 package.ps1 打包便携版时，会把 craft-fonts/fonts/<目录>/OFL.txt **逐个目录**复制成
+      # OFL-<目录>.txt —— 判据只是"目录存在"，与 manifest 无关。于是清单里早已不用的字体目录，
+      # 也会把它们的许可文件带进便携版（例如思源黑体的 OFL-noto-sans-cjk-sc.txt），造成"分发了一份
+      # 并未分发字体的许可"这种容易让人误解的情况。这里把清单未引用的字体目录删掉即可。
+      # 安全性：crates/fonts/build.rs 只读 manifest.txt 和清单里逐个列出的文件，从不遍历目录。
+      - name: 精简字体目录（只保留清单引用到的字体）
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="craft-fonts/fonts/manifest.txt"
+          removed=0
+          for d in craft-fonts/fonts/*/; do
+            [ -d "$d" ] || continue
+            name="$(basename "$d")"
+            if grep -qF "fonts/$name/" "$manifest"; then
+              echo "  保留 $name"
+            else
+              rm -rf "$d"
+              echo "  移除 $name（清单未引用）"
+              removed=$((removed + 1))
+            fi
+          done
+          echo "已移除 $removed 个未引用的字体目录"
+
+          # 反向确认：清单里逐个列出的字体文件都还在（防止上面删错）
+          while IFS= read -r line; do
+            f="$(printf '%s' "$line" | awk -F' *[|] *' '{print $3}')"
+            if [ -n "$f" ] && [ ! -f "craft-fonts/$f" ]; then
+              echo "::error::清单引用的字体文件不存在：craft-fonts/$f"
+              exit 1
+            fi
+          done < <(grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$')
+          echo "✅ 清单引用的字体文件全部就位"
+
       # 让安装界面能自选安装位置。
       # 做法：用本仓库 builder/overrides/installer-ui.wxs 整份替换上游的安装界面定义。
       # （本仓库被检出到 builder/ 子目录，上游源码在 src/，字体在 craft-fonts/。）
