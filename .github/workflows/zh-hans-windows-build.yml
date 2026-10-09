@@ -531,16 +531,88 @@ jobs:
           fi
           echo "✅ 简中字体已嵌入（$ZH_FONT_FAMILY），许可协议已随包分发，脚本声明含 Jpan"
 
+      # 合规：把许可证与声明随分发一起给出。
+      # 上游 package.ps1 会把仓库根目录的 README.md / LICENSE / LICENSE-MIT / LICENSE-APACHE
+      # 复制进便携版 zip，但**不含 NOTICE**；而 NOTICE 里既有版权与商标声明，也有第三方组件清单
+      # （Apache-2.0 第 4(d) 条要求随分发提供其内容）。这里把整套文件单独放成 Release 附件，
+      # 并额外生成一份「本构建改了什么」的说明，让「非官方构建」这一点在包外也能看到。
+      - name: 生成许可证与改动声明
+        shell: bash
+        working-directory: src
+        env:
+          SHA: ${{ needs.resolve.outputs.sha }}
+          REF: ${{ needs.resolve.outputs.ref }}
+        run: |
+          set -euo pipefail
+          dir="dist/release/licenses"
+          rm -rf "$dir"; mkdir -p "$dir"
+
+          for f in LICENSE LICENSE-MIT LICENSE-APACHE NOTICE; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              LICENSE)        cp "$f" "$dir/LICENSE.txt" ;;
+              LICENSE-MIT)    cp "$f" "$dir/LICENSE-MIT.txt" ;;
+              LICENSE-APACHE) cp "$f" "$dir/LICENSE-APACHE.txt" ;;
+              NOTICE)         cp "$f" "$dir/NOTICE.txt" ;;
+            esac
+            echo "  随附 $f"
+          done
+          test -s "$dir/LICENSE-MIT.txt" || { echo "::error::找不到上游 LICENSE-MIT —— 再分发必须随附许可证"; exit 1; }
+          [ -s "$dir/NOTICE.txt" ] || echo "::warning::上游仓库没有 NOTICE 文件"
+
+          cat > "$dir/UNOFFICIAL-BUILD-zh-CN.txt" <<NOTICE_EOF
+          这是基于 PdfCraft 的【非官方】简体中文构建，不是官方发布。
+
+          程序主体为原作者 "ArtCraft Team and the PdfCraft contributors" 的作品，
+          采用 MIT OR Apache-2.0 双许可（全文见同目录 LICENSE-MIT.txt / LICENSE-APACHE.txt，
+          版权、商标与第三方组件声明见 NOTICE.txt）。
+
+          本构建只修改了构建配置，未修改程序源码：
+            1) 界面简体中文字体改为随包嵌入 HarmonyOS Sans SC；该字体在字体清单中的
+               脚本声明为 Hans,Jpan,Latn，因此同时参与 PDF 内文字替换
+               （否则简体独有字会报 "Japanese fallback font has no glyph for U+XXXX"）。
+            2) 安装界面新增「选择安装位置」：欢迎页可直接改路径或点 Browse... 浏览。
+
+          源码：storytold/pdfcraft @ ${REF:-unknown} (${SHA:-unknown})
+          构建时间：$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          由第三方自动构建，与原项目作者无隶属、赞助或背书关系。本构建未做代码签名。
+
+          ----------------------------------------------------------------------
+
+          This is an UNOFFICIAL Simplified-Chinese build of PdfCraft. It is NOT an official release.
+
+          The application is the work of "ArtCraft Team and the PdfCraft contributors",
+          licensed under MIT OR Apache-2.0 (see LICENSE-MIT.txt / LICENSE-APACHE.txt;
+          copyright, trademark and third-party notices in NOTICE.txt).
+
+          Only build configuration was changed; no program source was modified:
+            1) The Simplified-Chinese UI font is embedded as HarmonyOS Sans SC, declared with
+               scripts Hans,Jpan,Latn so it also serves PDF text replacement.
+            2) The installer gained a "choose install location" page.
+
+          Source: storytold/pdfcraft @ ${REF:-unknown} (${SHA:-unknown})
+          Built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          Third-party automated build; not affiliated with or endorsed by the original authors.
+          Not code-signed.
+          NOTICE_EOF
+
+          test -s "$dir/UNOFFICIAL-BUILD-zh-CN.txt" || { echo "::error::改动声明生成失败（文件为空）"; exit 1; }
+          ls -la "$dir"
+          echo "✅ 许可证与改动声明已生成"
+
       - name: 列出产物
         shell: bash
         working-directory: src
-        run: ls -la dist/release/
+        run: ls -la dist/release/ dist/release/licenses/
 
       - name: 上传为 Actions 产物
         uses: actions/upload-artifact@v4
         with:
           name: pdfcraft-zh-hans-${{ needs.resolve.outputs.short_sha }}-windows-x64
-          path: src/dist/release/*
+          path: |
+            src/dist/release/*.msi
+            src/dist/release/*.zip
+            src/dist/release/licenses/*
           if-no-files-found: error
           retention-days: 90
 
@@ -563,6 +635,12 @@ jobs:
           {
             echo "PdfCraft 简体中文版（Windows x64）"
             echo ""
+            echo "> ⚠️ **非官方构建（unofficial build）** —— 本安装包由第三方自动构建，**不是官方发布**，"
+            echo "> 与原项目作者不存在隶属、赞助或背书关系。"
+            echo "> 程序主体为原作者（ArtCraft Team and the PdfCraft contributors）的作品，"
+            echo "> 采用 MIT OR Apache-2.0 双许可；本构建**只修改了构建配置，未修改程序源码**。"
+            echo "> 具体改动见本 Release 附带的 \`UNOFFICIAL-BUILD-zh-CN.txt\`。"
+            echo ""
             echo "由上游源码自动编译，界面译文已编译进二进制，无需任何额外语言包。"
             echo ""
             echo "- 源码来源：\`${UPSTREAM} @ ${REF}\`"
@@ -570,14 +648,6 @@ jobs:
             echo "- 完整版本号：\`${BUILD_VERSION}\`（后缀只出现在文件名里）"
             echo "- 界面简体中文字体：\`${ZH_FONT_FAMILY}\`（已编译进程序，中文不会渲染成方块）"
             echo "- 安装时可自选安装位置：欢迎页的 \`Install location\` 处可直接改路径，或点 \`Browse...\` 浏览目录（默认 \`C:\Program Files\PdfCraft\`）"
-            echo ""
-            echo "## 字体署名"
-            echo ""
-            echo "本软件使用了 **HarmonyOS Sans 字体**（字体文件名 \`${ZH_FONT_FILE}\`）。"
-            echo "HarmonyOS Sans 字体由 Huawei Device Co., Ltd. 授权，未经修改地随本软件分发；"
-            echo "许可协议全文见便携版内的 \`OFL-${ZH_FONT_DIR}.txt\`。"
-            echo ""
-            echo "> HarmonyOS Sans fonts are licensed from Huawei Device Co., Ltd."
             echo "- 未做代码签名：首次运行 Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可"
             echo "- 与官方 v0.2.1 同版本装过也没关系：MSI 的 \`AllowSameVersionUpgrades\` 会直接替换旧版"
             echo "- ⚠️ 软件里的「帮助 → 检查更新」指向的是**官方**发布页（那里是英文包），它只适合用来判断上游有没有发新版；**下载请回到本仓库的 Releases 页面**，否则会装回英文版"
@@ -587,21 +657,40 @@ jobs:
             echo "一般无需操作：应用会自动跟随系统语言，简体中文系统直接就是中文界面。"
             echo "如果仍是英文，进入 **菜单 → 编辑 → 首选项… → 界面语言 → 简体中文**。"
             echo ""
-            echo "## 许可证"
+            echo "## 许可证、署名与改动声明"
             echo ""
-            echo "PdfCraft 采用 MIT OR Apache-2.0 双许可，字体附带的 OFL 许可文件已随便携版一并放出。"
+            echo "PdfCraft 采用 **MIT OR Apache-2.0** 双许可。本 Release 附带以下文件（双击下载即可）："
+            echo ""
+            echo "| 文件 | 内容 |"
+            echo "|---|---|"
+            echo "| \`LICENSE-MIT.txt\`、\`LICENSE-APACHE.txt\` | 上游许可证全文 |"
+            echo "| \`NOTICE.txt\` | 上游版权声明、商标说明与第三方组件许可清单 |"
+            echo "| \`UNOFFICIAL-BUILD-zh-CN.txt\` | 本构建的改动说明（非官方声明）|"
+            echo ""
+            echo "便携版 zip 内同时含 \`LICENSE-MIT\`、\`LICENSE-APACHE\`、\`README.md\` 及字体许可文件。"
+            echo ""
+            echo "**界面中文字体署名**：本软件使用 **HarmonyOS Sans 字体**（\`${ZH_FONT_FILE}\`），"
+            echo "由 Huawei Device Co., Ltd. 授权、未经修改地随本软件分发，许可全文见便携版内的"
+            echo "\`OFL-${ZH_FONT_DIR}.txt\`。"
+            echo ""
+            echo "> HarmonyOS Sans fonts are licensed from Huawei Device Co., Ltd."
+            echo ""
+            echo "本构建为非官方第三方构建，与原项目作者无隶属或背书关系；仅修改构建配置，"
+            echo "未修改程序源码。名称 \`PdfCraft\` 仅用于说明本软件来源。"
           } > "$notes"
 
           if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在，覆盖其中的产物。"
-            gh release upload "$TAG" --repo "$GH_REPO" src/dist/release/*.msi src/dist/release/*.zip --clobber
+            echo "Release $TAG 已存在，覆盖其中的产物并刷新说明。"
+            gh release upload "$TAG" --repo "$GH_REPO" \
+              src/dist/release/*.msi src/dist/release/*.zip src/dist/release/licenses/* --clobber
+            gh release edit "$TAG" --repo "$GH_REPO" --notes-file "$notes"
           else
             gh release create "$TAG" \
               --repo "$GH_REPO" \
-              --title "PdfCraft 简体中文版 ${BUILD_VERSION} (${SHA:0:7})" \
+              --title "PdfCraft 简体中文版 ${BUILD_VERSION} (${SHA:0:7}) · 非官方构建" \
               --notes-file "$notes" \
               --latest \
-              src/dist/release/*.msi src/dist/release/*.zip
+              src/dist/release/*.msi src/dist/release/*.zip src/dist/release/licenses/*
           fi
 
           echo "下载地址：${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
