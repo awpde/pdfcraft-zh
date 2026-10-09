@@ -251,7 +251,8 @@ jobs:
           echo "✅ 清单含简体中文字体，可以继续"
 
       # 让安装界面能自选安装位置。
-      # 做法：用本仓库 overrides/installer-ui.wxs 整份替换上游的安装界面定义。
+      # 做法：用本仓库 builder/overrides/installer-ui.wxs 整份替换上游的安装界面定义。
+      # （本仓库被检出到 builder/ 子目录，上游源码在 src/，字体在 craft-fonts/。）
       # 为什么不改上游文件了事：工作流每次都从上游现拉源码，所以覆盖必须每次重新应用。
       # UPSTREAM_UI_SHA256 是我们写覆盖文件时所依据的上游版本指纹，用来提示上游是否改过界面。
       - name: 应用「自选安装位置」界面
@@ -261,12 +262,13 @@ jobs:
         run: |
           set -euo pipefail
           ui="src/packaging/windows/installer-ui.wxs"
+          override="builder/overrides/installer-ui.wxs"
           test -f "$ui" || { echo "::error::上游没有 $ui（目录结构可能变了）"; exit 1; }
-          test -f overrides/installer-ui.wxs || { echo "::error::本仓库缺少 overrides/installer-ui.wxs"; exit 1; }
+          test -f "$override" || { echo "::error::本仓库缺少 $override（检查 actions/checkout 的 path 是否为 builder）"; exit 1; }
 
           before="$(sha256sum "$ui" | cut -d' ' -f1)"
           echo "上游 installer-ui.wxs sha256: $before"
-          cp overrides/installer-ui.wxs "$ui"
+          cp "$override" "$ui"
           after="$(sha256sum "$ui" | cut -d' ' -f1)"
           echo "应用覆盖后 sha256:         $after"
 
