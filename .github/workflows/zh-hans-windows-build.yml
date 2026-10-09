@@ -205,6 +205,12 @@ jobs:
           path: src
           fetch-depth: 1
 
+      - name: 拉取本仓库（只为取界面覆盖文件）
+        uses: actions/checkout@v4
+        with:
+          path: builder
+          fetch-depth: 1
+
       - name: 拉取 craft-fonts（中日韩字形，缺失会导致中文显示成方块）
         uses: actions/checkout@v4
         with:
@@ -243,6 +249,44 @@ jobs:
             exit 1
           fi
           echo "✅ 清单含简体中文字体，可以继续"
+
+      # 让安装界面能自选安装位置。
+      # 做法：用本仓库 overrides/installer-ui.wxs 整份替换上游的安装界面定义。
+      # 为什么不改上游文件了事：工作流每次都从上游现拉源码，所以覆盖必须每次重新应用。
+      # UPSTREAM_UI_SHA256 是我们写覆盖文件时所依据的上游版本指纹，用来提示上游是否改过界面。
+      - name: 应用「自选安装位置」界面
+        shell: bash
+        env:
+          UPSTREAM_UI_SHA256: 47b593e09ed44b151bb44672b1e8836d9642b22f963da50016ddf7e89e106e7f
+        run: |
+          set -euo pipefail
+          ui="src/packaging/windows/installer-ui.wxs"
+          test -f "$ui" || { echo "::error::上游没有 $ui（目录结构可能变了）"; exit 1; }
+          test -f overrides/installer-ui.wxs || { echo "::error::本仓库缺少 overrides/installer-ui.wxs"; exit 1; }
+
+          before="$(sha256sum "$ui" | cut -d' ' -f1)"
+          echo "上游 installer-ui.wxs sha256: $before"
+          cp overrides/installer-ui.wxs "$ui"
+          after="$(sha256sum "$ui" | cut -d' ' -f1)"
+          echo "应用覆盖后 sha256:         $after"
+
+          for s in InstallLocationBrowser WIXUI_INSTALLDIR INSTALLFOLDER; do
+            grep -q "$s" "$ui" || { echo "::error::覆盖文件里缺少 $s"; exit 1; }
+          done
+          echo "✅ 已启用「自定义安装位置」界面"
+
+          {
+            echo "### 安装位置自选"
+            echo ""
+            echo "- 覆盖文件：\`overrides/installer-ui.wxs\`（sha256 \`${after:0:16}…\`）"
+            echo "- 上游原文件 sha256：\`${before:0:16}…\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$before" != "$UPSTREAM_UI_SHA256" ]; then
+            echo "::warning::上游的 installer-ui.wxs 已经变化（与我们写覆盖文件时的基准不同）。"
+            echo "::warning::本次仍用我们的覆盖版本，构建通常仍可成功；但若上游新增了被 pdfcraft.wxs"
+            echo "::warning::引用的对话框，构建会失败。届时请把 overrides/installer-ui.wxs 与上游重新合并。"
+          fi
 
       - name: 安装 Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@stable
@@ -304,6 +348,26 @@ jobs:
           CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
           CRAFT_FONTS_REQUIRED: '1'
         run: ./packaging/windows/package.ps1 -Arch x64
+
+      # 校验「自选安装位置」界面真的进了产出的 MSI（而不是只改了源码却没用上）。
+      # 原理：MSI 的对话框名、控件事件参数都存在字符串池里，可直接做字节查找。
+      - name: 校验 MSI 带上了「自选安装位置」界面
+        shell: bash
+        working-directory: src
+        run: |
+          set -euo pipefail
+          msi="$(find dist/release -name '*.msi' -type f | head -1)"
+          test -n "$msi" || { echo "::error::找不到编译出的 MSI"; exit 1; }
+          echo "检查 $msi"
+          for s in InstallLocationBrowser WIXUI_INSTALLDIR SetTargetPath _BrowseProperty; do
+            if LC_ALL=C grep -a -q -F "$s" "$msi"; then
+              echo "  ✅ $s"
+            else
+              echo "::error::MSI 里缺少 $s —— 安装界面覆盖没有生效，已中止发布"
+              exit 1
+            fi
+          done
+          echo "✅ MSI 已包含「自定义安装位置」界面"
 
       # 第三道防呆：直接检查编译出来的 exe 里有没有嵌进简中字体。
       # 原理：build.rs 会把字体清单生成成 Rust 源码 —— CraftFont { family: "Noto Sans CJK SC", .. }，
@@ -370,6 +434,7 @@ jobs:
             echo "- commit：\`${SHA}\`"
             echo "- 完整版本号：\`${BUILD_VERSION}\`（后缀只出现在文件名里）"
             echo "- 已嵌入 craft-fonts（含 Noto Sans CJK SC），中文不会渲染成方块"
+            echo "- 安装时可自选安装位置：欢迎页的 \`Install location\` 处可直接改路径，或点 \`Browse...\` 浏览目录（默认 \`C:\Program Files\PdfCraft\`）"
             echo "- 未做代码签名：首次运行 Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可"
             echo "- 与官方 v0.2.1 同版本装过也没关系：MSI 的 \`AllowSameVersionUpgrades\` 会直接替换旧版"
             echo "- ⚠️ 软件里的「帮助 → 检查更新」指向的是**官方**发布页（那里是英文包），它只适合用来判断上游有没有发新版；**下载请回到本仓库的 Releases 页面**，否则会装回英文版"
