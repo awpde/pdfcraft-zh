@@ -48,6 +48,17 @@ env:
   # 界面译文所在的文件。没有它就说明这个版本是纯英文，直接跳过构建。
   ZH_CATALOG: crates/ui-egui/src/i18n/zh-hans.tsv
 
+  # ---- 简体中文界面字体（可替换）------------------------------------------------------------
+  # 用本仓库 overrides/fonts/<ZH_FONT_DIR>/ 下的字体，替换 craft-fonts 里的简中字体。
+  # 换字体只需改这三行 + 换掉 overrides/fonts/<新目录>/ 里的文件，其余步骤都按这里取值。
+  # 注意：ZH_FONT_FAMILY 必须与字体自身的 family 名一致（用 fontTools 读 name 表可得）。
+  # 当前用的 HarmonyOS Sans SC 是华为免费商用字体：允许嵌入/捆绑/再分发，但要求
+  # ① 软件中显著声明使用了它 ② 不得修改字体 ③ 不得单独售卖 ④ 保留版权声明与协议。
+  # 许可证全文随包分发（overrides/fonts/<ZH_FONT_DIR>/OFL.txt → 便携版里的 OFL-<目录>.txt）。
+  ZH_FONT_FAMILY: HarmonyOS Sans SC
+  ZH_FONT_DIR: harmonyos-sans-sc
+  ZH_FONT_FILE: HarmonyOS_Sans_SC_Regular.ttf
+
 concurrency:
   group: zh-hans-windows
   cancel-in-progress: false
@@ -218,37 +229,68 @@ jobs:
           ref: ${{ env.CRAFT_FONTS_REF }}
           path: craft-fonts
 
-      # 第二道防呆（第一道在编译前、第三道在编译后）：
-      # 字体清单里必须有 Hans（简体中文）字体，否则后面编出来的界面就是满屏方块。
-      # 这一步只要几秒，能在浪费 20 分钟编译之前就拦下来。
-      - name: 校验字体清单含简体中文字体
+      # 把简体中文界面字体换成本仓库自带的字体（默认鸿蒙 HarmonyOS Sans SC）。
+      # 做法：把字体拷进 craft-fonts 的 fonts/<目录>/，并改写 fonts/manifest.txt ——
+      # 删掉原有的 Hans（简中）行，再追加我们的一行。build.rs 只读 manifest 的前 4 列
+      # （family/style/file/scripts），不校验 sha256，所以这样替换是安全的，且上游
+      # 更新 craft-fonts 后本步骤照样生效（我们只替掉简中那一行，日文等其余行保持上游原样）。
+      - name: 应用简体中文界面字体
+        shell: bash
+        run: |
+          set -euo pipefail
+          src_dir="builder/overrides/fonts/$ZH_FONT_DIR"
+          dst_dir="craft-fonts/fonts/$ZH_FONT_DIR"
+          manifest="craft-fonts/fonts/manifest.txt"
+
+          test -d "$src_dir" || { echo "::error::本仓库缺少字体目录 $src_dir"; exit 1; }
+          test -f "$src_dir/$ZH_FONT_FILE" || { echo "::error::$src_dir 里缺少 $ZH_FONT_FILE"; exit 1; }
+          test -f "$src_dir/OFL.txt" || { echo "::error::$src_dir 里缺少 OFL.txt（字体许可协议必须随包分发）"; exit 1; }
+          test -s "$manifest" || { echo "::error::找不到字体清单 $manifest"; exit 1; }
+
+          mkdir -p "$dst_dir"
+          cp "$src_dir/$ZH_FONT_FILE" "$dst_dir/"
+          # 这个文件名是硬性要求：上游 package.ps1 只会把 fonts/<目录>/OFL.txt
+          # 复制成便携版里的 OFL-<目录>.txt，别的名字不会被随包分发。
+          cp "$src_dir/OFL.txt" "$dst_dir/OFL.txt"
+
+          sha="$(sha256sum "$dst_dir/$ZH_FONT_FILE" | cut -d' ' -f1)"
+          tmp="$(mktemp)"
+          {
+            grep '^[[:space:]]*#' "$manifest" || true
+            grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$' | awk -F' *[|] *' '$4 !~ /Hans/'
+            printf '%s | Regular | fonts/%s/%s | Hans,Latn | Huawei HarmonyOS Sans Fonts License | fonts/%s/OFL.txt | %s | https://developer.huawei.com/consumer/cn/design/resource-V1\n' \
+              "$ZH_FONT_FAMILY" "$ZH_FONT_DIR" "$ZH_FONT_FILE" "$ZH_FONT_DIR" "$sha"
+          } > "$tmp"
+          mv "$tmp" "$manifest"
+
+          echo "改写后的字体清单："
+          grep -v '^[[:space:]]*#' "$manifest" | awk -F' *[|] *' '{ printf "  %-20s %-8s scripts=%s\n", $1, $2, $4 }'
+          echo "✅ 已把简体中文字体换成：$ZH_FONT_FAMILY（sha256 ${sha:0:16}…）"
+
+      # 第二道防呆（第一道在上面替换时、第三道在编译后）：
+      # 确认清单里的简中字体就是我们指定的那款，且**只有这一款**——只有一款才能保证
+      # 界面中文 100% 用它渲染；混用两种字体会因度量不同导致文字基线错位（上游代码有明确警告）。
+      - name: 校验字体清单含指定的简体中文字体
         shell: bash
         run: |
           set -euo pipefail
           manifest="craft-fonts/fonts/manifest.txt"
-          test -s "$manifest" || { echo "::error::找不到字体清单 $manifest"; exit 1; }
+          hans_list="$(grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$' | awk -F' *[|] *' '$4 ~ /Hans/ { print $1 }')"
 
-          echo "craft-fonts 字体清单："
-          grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$' \
-            | awk -F' *[|] *' '{ printf "  %-18s %-8s scripts=%s\n", $1, $2, $4 }'
+          echo "清单里的 Hans（简体中文）字体："
+          printf '%s\n' "$hans_list" | sed 's/^/  /'
 
-          ok=1
-          if ! grep -q 'Noto Sans CJK SC' "$manifest"; then
-            echo "  缺少字体：Noto Sans CJK SC"
-            ok=0
-          fi
-          if ! grep -q 'Hans' "$manifest"; then
-            echo "  清单里没有任何 Hans（简体中文）脚本的字体"
-            ok=0
-          fi
-
-          if [ "$ok" -ne 1 ]; then
-            echo "::error::craft-fonts 里没有简体中文字体，编译出来的界面中文会显示成方块。"
-            echo "::error::请把工作流顶部的 CRAFT_FONTS_REF 换成含 Noto Sans CJK SC 的较新 commit"
-            echo "::error::（在 craft-fonts 仓库的 fonts/manifest.txt 里可以看到）。"
+          if ! grep -qxF "$ZH_FONT_FAMILY" <<<"$hans_list"; then
+            echo "::error::清单里没有 $ZH_FONT_FAMILY，界面中文会显示成方块"
             exit 1
           fi
-          echo "✅ 清单含简体中文字体，可以继续"
+          n="$(printf '%s\n' "$hans_list" | grep -c . || true)"
+          if [ "$n" -ne 1 ]; then
+            echo "::error::清单里有 $n 款 Hans 字体，应恰好 1 款；否则界面中文会混用两种字体、基线错位"
+            exit 1
+          fi
+          test -s "craft-fonts/fonts/$ZH_FONT_DIR/OFL.txt" || { echo "::error::缺少字体许可协议 OFL.txt"; exit 1; }
+          echo "✅ 简体中文字体 = $ZH_FONT_FAMILY（唯一 Hans 字体，许可协议已就位）"
 
       # 让安装界面能自选安装位置。
       # 做法：用本仓库 builder/overrides/installer-ui.wxs 整份替换上游的安装界面定义。
@@ -371,11 +413,12 @@ jobs:
           done
           echo "✅ MSI 已包含「自定义安装位置」界面"
 
-      # 第三道防呆：直接检查编译出来的 exe 里有没有嵌进简中字体。
-      # 原理：build.rs 会把字体清单生成成 Rust 源码 —— CraftFont { family: "Noto Sans CJK SC", .. }，
+      # 第三道防呆：直接检查编译出来的 exe 里有没有嵌进我们指定的简中字体。
+      # 原理：build.rs 会把字体清单生成成 Rust 源码 —— CraftFont { family: "…", .. }，
       # 所以字体族名以 UTF-8 字符串字面量形式存在于 exe 中，可直接做字节查找。
       # 没有它就意味着界面中文会变成方块，宁可让构建失败也不发布这种包。
-      - name: 校验 exe 内确实嵌入了简体中文字体
+      # 顺带确认便携版里随附了字体许可协议（分发要求）。
+      - name: 校验 exe 内确实嵌入了指定的简体中文字体
         shell: bash
         working-directory: src
         run: |
@@ -387,16 +430,26 @@ jobs:
           test -n "$exe" && test -f "$exe" || { echo "::error::找不到编译出的 pdfcraft.exe"; exit 1; }
           echo "检查 $exe（$(du -h "$exe" | cut -f1)）内嵌字体："
 
-          for f in "BIZ UDPGothic" "Shippori Mincho" "Noto Sans CJK SC"; do
+          for f in "BIZ UDPGothic" "Shippori Mincho" "$ZH_FONT_FAMILY"; do
             if LC_ALL=C grep -a -q -F "$f" "$exe"; then echo "  ✅ $f"; else echo "  ❌ $f"; fi
           done
 
-          if ! LC_ALL=C grep -a -q -F "Noto Sans CJK SC" "$exe"; then
-            echo "::error::exe 里没有嵌入 Noto Sans CJK SC —— 中文会显示成方块，已中止发布。"
-            echo "::error::常见原因：craft-fonts 版本过旧（缺 Hans 字体）。请检查 CRAFT_FONTS_REF。"
+          if ! LC_ALL=C grep -a -q -F "$ZH_FONT_FAMILY" "$exe"; then
+            echo "::error::exe 里没有嵌入 $ZH_FONT_FAMILY —— 界面中文会显示成方块，已中止发布。"
+            echo "::error::请检查工作流顶部的 ZH_FONT_* 设置和 overrides/fonts/ 下的字体文件。"
             exit 1
           fi
-          echo "✅ 简体中文字体已嵌入，中文可正常显示"
+
+          zip="$(find dist/release -name '*portable.zip' -type f | head -1)"
+          test -n "$zip" || { echo "::error::找不到便携版 zip"; exit 1; }
+          lic="OFL-$ZH_FONT_DIR.txt"
+          if LC_ALL=C grep -a -q -F "$lic" "$zip"; then
+            echo "  ✅ 便携版内随附字体许可：$lic"
+          else
+            echo "::error::便携版里没有 $lic —— 字体许可必须随包分发，已中止发布"
+            exit 1
+          fi
+          echo "✅ 简中字体已嵌入（$ZH_FONT_FAMILY），许可协议已随包分发"
 
       - name: 列出产物
         shell: bash
@@ -435,8 +488,16 @@ jobs:
             echo "- 源码来源：\`${UPSTREAM} @ ${REF}\`"
             echo "- commit：\`${SHA}\`"
             echo "- 完整版本号：\`${BUILD_VERSION}\`（后缀只出现在文件名里）"
-            echo "- 已嵌入 craft-fonts（含 Noto Sans CJK SC），中文不会渲染成方块"
+            echo "- 界面简体中文字体：\`${ZH_FONT_FAMILY}\`（已编译进程序，中文不会渲染成方块）"
             echo "- 安装时可自选安装位置：欢迎页的 \`Install location\` 处可直接改路径，或点 \`Browse...\` 浏览目录（默认 \`C:\Program Files\PdfCraft\`）"
+            echo ""
+            echo "## 字体署名"
+            echo ""
+            echo "本软件使用了 **HarmonyOS Sans 字体**（字体文件名 \`${ZH_FONT_FILE}\`）。"
+            echo "HarmonyOS Sans 字体由 Huawei Device Co., Ltd. 授权，未经修改地随本软件分发；"
+            echo "许可协议全文见便携版内的 \`OFL-${ZH_FONT_DIR}.txt\`。"
+            echo ""
+            echo "> HarmonyOS Sans fonts are licensed from Huawei Device Co., Ltd."
             echo "- 未做代码签名：首次运行 Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可"
             echo "- 与官方 v0.2.1 同版本装过也没关系：MSI 的 \`AllowSameVersionUpgrades\` 会直接替换旧版"
             echo "- ⚠️ 软件里的「帮助 → 检查更新」指向的是**官方**发布页（那里是英文包），它只适合用来判断上游有没有发新版；**下载请回到本仓库的 Releases 页面**，否则会装回英文版"
