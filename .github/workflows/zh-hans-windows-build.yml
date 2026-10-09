@@ -258,7 +258,17 @@ jobs:
           {
             grep '^[[:space:]]*#' "$manifest" || true
             grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$' | awk -F' *[|] *' '$4 !~ /Hans/'
-            printf '%s | Regular | fonts/%s/%s | Hans,Latn | Huawei HarmonyOS Sans Fonts License | fonts/%s/OFL.txt | %s | https://developer.huawei.com/consumer/cn/design/resource-V1\n' \
+            # scripts 里必须同时写 Jpan，不能只写 Hans。
+            # 原因：往 PDF 里写"替换文字"时，上游的字体来源是
+            # crates/edit/src/text.rs → pdfcraft_fonts::document_japanese_fonts_for_style()
+            # → crates/fonts/src/craft.rs 的 document_faces()，而它的筛选条件正是
+            # covers("Jpan")（只取日文脚本字体）。只声明 Hans 的话，这款中文字体
+            # 永远进不了候选集，简体独有字（如「趋」U+8D8B）就会报
+            # "Japanese fallback font has no glyph for U+8D8B"。
+            # 声明 Jpan 与事实相符：鸿蒙实测覆盖日文假名（片假名 90/90、平假名 84/86）。
+            # 它在候选表里排在所有日文字体之后，只有日文字体缺该字时才被选用，
+            # 因此不影响原有的日文文字与中日共用汉字的渲染结果。
+            printf '%s | Regular | fonts/%s/%s | Hans,Jpan,Latn | Huawei HarmonyOS Sans Fonts License | fonts/%s/OFL.txt | %s | https://developer.huawei.com/consumer/cn/design/resource-V1\n' \
               "$ZH_FONT_FAMILY" "$ZH_FONT_DIR" "$ZH_FONT_FILE" "$ZH_FONT_DIR" "$sha"
           } > "$tmp"
           mv "$tmp" "$manifest"
@@ -266,6 +276,7 @@ jobs:
           echo "改写后的字体清单："
           grep -v '^[[:space:]]*#' "$manifest" | awk -F' *[|] *' '{ printf "  %-20s %-8s scripts=%s\n", $1, $2, $4 }'
           echo "✅ 已把简体中文字体换成：$ZH_FONT_FAMILY（sha256 ${sha:0:16}…）"
+          echo "   脚本声明含 Jpan → 该字体同时参与「往 PDF 里写替换文字」的候选集"
 
       # 第二道防呆（第一道在上面替换时、第三道在编译后）：
       # 确认清单里的简中字体就是我们指定的那款，且**只有这一款**——只有一款才能保证
@@ -290,7 +301,23 @@ jobs:
             exit 1
           fi
           test -s "craft-fonts/fonts/$ZH_FONT_DIR/OFL.txt" || { echo "::error::缺少字体许可协议 OFL.txt"; exit 1; }
-          echo "✅ 简体中文字体 = $ZH_FONT_FAMILY（唯一 Hans 字体，许可协议已就位）"
+
+          # 反向检查：这款字体的 scripts 里必须含 Jpan。
+          # 少了它，界面中文照旧正常，但「往 PDF 里写文字」时这款字体不会进入候选集，
+          # 简体独有字会继续报 "Japanese fallback font has no glyph"。这里显式拦下来，
+          # 免得将来清单格式变化导致上面那行 printf 静默失效。
+          zh_scripts="$(grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$' \
+            | awk -F' *[|] *' -v want="$ZH_FONT_FAMILY" '$1 == want { print $4 }')"
+          echo "  $ZH_FONT_FAMILY 的 scripts = [$zh_scripts]"
+          case ",$(echo "$zh_scripts" | tr -d ' ')," in
+            *,Jpan,*) ;;
+            *)
+              echo "::error::$ZH_FONT_FAMILY 的 scripts 里没有 Jpan —— 往 PDF 里写简体中文仍会失败"
+              echo "::error::（报错形如 Japanese fallback font has no glyph for U+XXXX）"
+              exit 1
+              ;;
+          esac
+          echo "✅ 简体中文字体 = $ZH_FONT_FAMILY（唯一 Hans 字体，许可协议已就位，且含 Jpan → 可用于 PDF 文字替换）"
 
       # 上游 package.ps1 打包便携版时，会把 craft-fonts/fonts/<目录>/OFL.txt **逐个目录**复制成
       # OFL-<目录>.txt —— 判据只是"目录存在"，与 manifest 无关。于是清单里早已不用的字体目录，
@@ -483,7 +510,26 @@ jobs:
             echo "::error::便携版里没有 $lic —— 字体许可必须随包分发，已中止发布"
             exit 1
           fi
-          echo "✅ 简中字体已嵌入（$ZH_FONT_FAMILY），许可协议已随包分发"
+
+          # 第四道防呆：确认这款字体在**编译期生成的字体定义**里带上了 Jpan。
+          # 只有带上 Jpan，它才会进入「往 PDF 里写替换文字」的候选集
+          # （crates/fonts/src/craft.rs 的 document_faces 按 covers("Jpan") 过滤）。
+          # 这里读的是 build.rs 生成的 craft_fonts.rs，比在 exe 里搜字符串更可靠。
+          gen="$(find target -name craft_fonts.rs -path '*out*' -type f 2>/dev/null | head -1)"
+          if [ -z "$gen" ]; then
+            echo "::warning::找不到编译期生成的 craft_fonts.rs，跳过 Jpan 复核"
+          else
+            line="$(grep -F "$ZH_FONT_FAMILY" "$gen" | head -1)"
+            echo "  生成的字体定义：$line"
+            case "$line" in
+              *Jpan*) echo "  ✅ 含 Jpan → 可用于 PDF 文字替换（简体字不再报 no glyph）" ;;
+              *)
+                echo "::error::$ZH_FONT_FAMILY 的脚本声明里没有 Jpan —— 往 PDF 里写简体中文仍会失败"
+                exit 1
+                ;;
+            esac
+          fi
+          echo "✅ 简中字体已嵌入（$ZH_FONT_FAMILY），许可协议已随包分发，脚本声明含 Jpan"
 
       - name: 列出产物
         shell: bash
