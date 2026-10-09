@@ -1,0 +1,733 @@
+# ---------------------------------------------------------------------------
+# 从上游源码构建「简体中文」版 PdfCraft 的 Windows 安装包（MSI + 便携版 zip）
+#
+# 为什么需要这个：PdfCraft 把界面译文用 include_str!() 编译进二进制，
+# 所以界面是不是中文，只取决于「你编译的是哪个 commit」。官方 v0.2.1 里
+# 只有 English / 日本語；上游 main 分支已经有完整简体中文（zh-hans 词条）。
+#
+# 这个工作流不依赖当前仓库里的任何代码 —— 它直接拉取上游源码来编译，
+# 所以放在 fork 里、或者放在一个空仓库里，效果都一样，也不用跟上游同步代码。
+#
+# 用法：仓库 → Actions → 左侧选「构建简体中文版 (Windows)」→ Run workflow
+# ---------------------------------------------------------------------------
+
+name: 构建简体中文版 + 中文输入修复 (Windows)
+
+on:
+  # 手动触发：想要哪个版本就构建哪个版本
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: '上游分支或 tag。main = 最新开发版（含简体中文）；也可填 v0.2.2 这类 tag'
+        required: true
+        default: 'main'
+      version_suffix:
+        description: '版本后缀，用来和官方版文件名区分开（MSI 的产品版本号仍是纯数字）'
+        required: true
+        default: 'zh.1'
+      make_release:
+        description: '构建完成后自动创建 Release，方便直接下载'
+        type: boolean
+        default: true
+
+  # 自动跟版：每天 UTC 22:00（北京时间次日 06:00）检查上游是否发了带中文的新版本
+  schedule:
+    - cron: '0 22 * * *'
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM: storytold/pdfcraft
+  # craft-fonts 提供中日韩字形。**必须是含 Noto Sans CJK SC（Hans 脚本）的较新版本**：
+  # 旧版本（例如 v0.2.1 发布时所用的 abb83316…）只带 4 款日文字体，用它编译出来的
+  # 程序会用日文字体渲染中文，简体独有的字（单/导/签/编/删/显/线…）没有字形 →
+  # 界面显示成一个个方块。已改为含简中字体的版本，并在下面加了两道校验防止再犯。
+  CRAFT_FONTS_REPO: storytold/craft-fonts
+  CRAFT_FONTS_REF: 8dcdacd5153e64560d109541a47d806f26f048c0
+  # 界面译文所在的文件。没有它就说明这个版本是纯英文，直接跳过构建。
+  ZH_CATALOG: crates/ui-egui/src/i18n/zh-hans.tsv
+
+  # ---- 简体中文界面字体（可替换）------------------------------------------------------------
+  # 用本仓库 overrides/fonts/<ZH_FONT_DIR>/ 下的字体，替换 craft-fonts 里的简中字体。
+  # 换字体只需改这三行 + 换掉 overrides/fonts/<新目录>/ 里的文件，其余步骤都按这里取值。
+  # 注意：ZH_FONT_FAMILY 必须与字体自身的 family 名一致（用 fontTools 读 name 表可得）。
+  # 当前用的 HarmonyOS Sans SC 是华为免费商用字体：允许嵌入/捆绑/再分发，但要求
+  # ① 软件中显著声明使用了它 ② 不得修改字体 ③ 不得单独售卖 ④ 保留版权声明与协议。
+  # 许可证全文随包分发（overrides/fonts/<ZH_FONT_DIR>/OFL.txt → 便携版里的 OFL-<目录>.txt）。
+  ZH_FONT_FAMILY: HarmonyOS Sans SC
+  ZH_FONT_DIR: harmonyos-sans-sc
+  ZH_FONT_FILE: HarmonyOS_Sans_SC_Regular.ttf
+
+concurrency:
+  group: zh-cjk-windows
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: 确定构建目标
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.r.outputs.ref }}
+      sha: ${{ steps.r.outputs.sha }}
+      short_sha: ${{ steps.r.outputs.short_sha }}
+      version_suffix: ${{ steps.r.outputs.version_suffix }}
+      release_tag: ${{ steps.r.outputs.release_tag }}
+      should_build: ${{ steps.r.outputs.should_build }}
+      make_release: ${{ steps.r.outputs.make_release }}
+      reason: ${{ steps.r.outputs.reason }}
+    steps:
+      - name: 解析分支 / 版本并校验中文词条
+        id: r
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REF: ${{ inputs.upstream_ref }}
+          INPUT_SUFFIX: ${{ inputs.version_suffix }}
+          INPUT_RELEASE: ${{ inputs.make_release }}
+        run: |
+          set -uo pipefail
+
+          skip() {
+            echo "$1"
+            {
+              echo "should_build=false"
+              echo "reason=$1"
+              echo "ref=${ref:-}"
+              echo "sha=${sha:-}"
+              echo "short_sha=${short:-}"
+              echo "version_suffix=${suffix:-zh.1}"
+              echo "release_tag="
+              echo "make_release=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          ref=""; sha=""; short=""
+
+          if [ -n "${INPUT_REF:-}" ]; then
+            # ---- 手动触发 ----
+            ref="$INPUT_REF"
+            suffix="${INPUT_SUFFIX:-zh.1}"
+            make_release="${INPUT_RELEASE:-true}"
+            reason="手动构建 ref=$ref"
+          else
+            # ---- 定时触发：跟随上游最新 Release ----
+            ref="$(gh api "repos/$UPSTREAM/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            suffix="zh.1"
+            make_release="true"
+            if [ -z "$ref" ]; then
+              skip "上游还没有 Release，跳过"
+            fi
+            reason="定时跟版：上游最新 Release $ref"
+          fi
+
+          sha="$(gh api "repos/$UPSTREAM/commits/$ref" --jq .sha 2>/dev/null || true)"
+          if [ -z "$sha" ]; then
+            skip "找不到上游 ref '$ref'"
+          fi
+          short="${sha:0:7}"
+
+          # 关键校验：这个 ref 到底有没有简体中文词条
+          if ! gh api "repos/$UPSTREAM/contents/$ZH_CATALOG?ref=$ref" >/dev/null 2>&1; then
+            echo "::notice::上游 ref '$ref' 不含 $ZH_CATALOG，构建出来仍是英文界面，已跳过。"
+            echo "::notice::官方最新 Release 通常属于这种情况；请改用 main 分支，或等上游发版。"
+            skip "ref '$ref' 不含简体中文词条，跳过构建"
+          fi
+
+          # Release 标签：定时跟版按上游 tag 去重；手动构建带上 commit 短哈希
+          safe_ref="$(printf '%s' "$ref" | tr '/' '-')"
+          if [ -n "${INPUT_REF:-}" ]; then
+            release_tag="zh-cjk-${safe_ref}-${short}"
+          else
+            release_tag="zh-cjk-${safe_ref}"
+          fi
+
+          {
+            echo "should_build=true"
+            echo "reason=$reason"
+            echo "ref=$ref"
+            echo "sha=$sha"
+            echo "short_sha=$short"
+            echo "version_suffix=$suffix"
+            echo "release_tag=$release_tag"
+            echo "make_release=$make_release"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### 中文版构建目标"
+            echo ""
+            echo "- 上游 ref：\`$ref\`"
+            echo "- commit：\`$sha\`"
+            echo "- 版本后缀：\`$suffix\`"
+            echo "- Release 标签：\`$release_tag\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  keepalive:
+    name: 保活（防止定时构建被 GitHub 停用）
+    # 公开仓库连续 60 天没有任何提交时，GitHub 会「悄悄」停用定时任务，不通知。
+    # 而这个仓库平时不会产生提交（编译用的代码是从上游现拉的），正好会踩中这条规则。
+    # 所以定时任务每次运行时顺便看一眼：距上次提交超过 50 天就补一个空提交，把计时清零。
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 距上次提交超过 50 天则补一个空提交
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          last="$(gh api "repos/${{ github.repository }}/commits?per_page=1" --jq '.[0].commit.committer.date' 2>/dev/null || true)"
+          if [ -z "$last" ]; then
+            echo "::warning::读不到最近提交时间，跳过保活"
+            exit 0
+          fi
+          days=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 86400 ))
+          echo "最近一次提交在 $days 天前（$last）"
+          if [ "$days" -lt 50 ]; then
+            echo "无需保活。"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: 保活提交，避免定时构建被 GitHub 停用 [skip ci]"
+          git push
+          echo "已补空提交，60 天计时已清零。"
+
+  build:
+    name: 构建 Windows x64 中文安装包
+    needs: resolve
+    if: needs.resolve.outputs.should_build == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - name: 说明
+        run: echo "构建 ${{ needs.resolve.outputs.reason }}"
+
+      - name: 拉取上游源码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ needs.resolve.outputs.ref }}
+          path: src
+          fetch-depth: 1
+
+      - name: 拉取本仓库（只为取界面覆盖文件）
+        uses: actions/checkout@v4
+        with:
+          path: builder
+          fetch-depth: 1
+
+      - name: 拉取 craft-fonts（中日韩字形，缺失会导致中文显示成方块）
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRAFT_FONTS_REPO }}
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: craft-fonts
+
+      # 核心：应用「新增中文文字」修复补丁，让往 PDF 里新加中文不再显示成问号。
+      # 原理：上游 added.rs 对非 WinAnsi 字符一律用 win_ansi() 编码成 '?'；本补丁给
+      # draw() 新增一条 CJK 分支，复用 japanese_glyph_from()（Shippori Mincho 日文宋体）
+      # 把每个中文字形画成 Type 3 字体，与上游对阿拉伯文的 draw_arabic() 做法一致。
+      # 补丁存于本仓库 overrides/cjk.patch，基于上游 added.rs 的 commit 生成；
+      # 若上游改动该文件导致补丁无法干净应用，则降级为「纯中文化版」（仍能正常用，
+      # 只是新增中文文字会退回问号）并告警，绝不静默产出坏的包。
+      - name: 应用「新增中文文字」修复补丁
+        shell: bash
+        run: |
+          set -uo pipefail
+          patch_file="builder/overrides/cjk.patch"
+          test -f "$patch_file" || { echo "::error::本仓库缺少 $patch_file"; exit 1; }
+
+          if git -C src apply --check "$patch_file" 2>/dev/null; then
+            git -C src apply "$patch_file"
+            echo "✅ 已应用 CJK 修复补丁（新增中文文字不再显示为问号）"
+            grep -q "draw_cjk" src/crates/edit/src/added.rs && echo "   已确认 added.rs 含 draw_cjk" || { echo "::error::补丁应用后未找到 draw_cjk"; exit 1; }
+          else
+            echo "::warning::补丁无法干净应用到上游 added.rs（上游可能改动过该文件）。"
+            echo "::warning::本次降级为「纯中文化版」：界面仍为中文，但新增中文文字会退回问号。"
+            echo "::warning::请用上游最新 added.rs 重新生成 overrides/cjk.patch。"
+          fi
+
+      # 把简体中文界面字体换成本仓库自带的字体（默认鸿蒙 HarmonyOS Sans SC）。
+      # 做法：把字体拷进 craft-fonts 的 fonts/<目录>/，并改写 fonts/manifest.txt ——
+      # 删掉原有的 Hans（简中）行，再追加我们的一行。build.rs 只读 manifest 的前 4 列
+      # （family/style/file/scripts），不校验 sha256，所以这样替换是安全的，且上游
+      # 更新 craft-fonts 后本步骤照样生效（我们只替掉简中那一行，日文等其余行保持上游原样）。
+      - name: 应用简体中文界面字体
+        shell: bash
+        run: |
+          set -euo pipefail
+          src_dir="builder/overrides/fonts/$ZH_FONT_DIR"
+          dst_dir="craft-fonts/fonts/$ZH_FONT_DIR"
+          manifest="craft-fonts/fonts/manifest.txt"
+
+          test -d "$src_dir" || { echo "::error::本仓库缺少字体目录 $src_dir"; exit 1; }
+          test -f "$src_dir/$ZH_FONT_FILE" || { echo "::error::$src_dir 里缺少 $ZH_FONT_FILE"; exit 1; }
+          test -f "$src_dir/OFL.txt" || { echo "::error::$src_dir 里缺少 OFL.txt（字体许可协议必须随包分发）"; exit 1; }
+          test -s "$manifest" || { echo "::error::找不到字体清单 $manifest"; exit 1; }
+
+          mkdir -p "$dst_dir"
+          cp "$src_dir/$ZH_FONT_FILE" "$dst_dir/"
+          # 这个文件名是硬性要求：上游 package.ps1 只会把 fonts/<目录>/OFL.txt
+          # 复制成便携版里的 OFL-<目录>.txt，别的名字不会被随包分发。
+          cp "$src_dir/OFL.txt" "$dst_dir/OFL.txt"
+
+          sha="$(sha256sum "$dst_dir/$ZH_FONT_FILE" | cut -d' ' -f1)"
+          tmp="$(mktemp)"
+          {
+            grep '^[[:space:]]*#' "$manifest" || true
+            grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$' | awk -F' *[|] *' '$4 !~ /Hans/'
+            # scripts 里必须同时写 Jpan，不能只写 Hans。
+            # 原因：往 PDF 里写"替换文字"时，上游的字体来源是
+            # crates/edit/src/text.rs → pdfcraft_fonts::document_japanese_fonts_for_style()
+            # → crates/fonts/src/craft.rs 的 document_faces()，而它的筛选条件正是
+            # covers("Jpan")（只取日文脚本字体）。只声明 Hans 的话，这款中文字体
+            # 永远进不了候选集，简体独有字（如「趋」U+8D8B）就会报
+            # "Japanese fallback font has no glyph for U+8D8B"。
+            # 声明 Jpan 与事实相符：鸿蒙实测覆盖日文假名（片假名 90/90、平假名 84/86）。
+            # 它在候选表里排在所有日文字体之后，只有日文字体缺该字时才被选用，
+            # 因此不影响原有的日文文字与中日共用汉字的渲染结果。
+            printf '%s | Regular | fonts/%s/%s | Hans,Jpan,Latn | Huawei HarmonyOS Sans Fonts License | fonts/%s/OFL.txt | %s | https://developer.huawei.com/consumer/cn/design/resource-V1\n' \
+              "$ZH_FONT_FAMILY" "$ZH_FONT_DIR" "$ZH_FONT_FILE" "$ZH_FONT_DIR" "$sha"
+          } > "$tmp"
+          mv "$tmp" "$manifest"
+
+          echo "改写后的字体清单："
+          grep -v '^[[:space:]]*#' "$manifest" | awk -F' *[|] *' '{ printf "  %-20s %-8s scripts=%s\n", $1, $2, $4 }'
+          echo "✅ 已把简体中文字体换成：$ZH_FONT_FAMILY（sha256 ${sha:0:16}…）"
+          echo "   脚本声明含 Jpan → 该字体同时参与「往 PDF 里写替换文字」的候选集"
+
+      # 第二道防呆（第一道在上面替换时、第三道在编译后）：
+      # 确认清单里的简中字体就是我们指定的那款，且**只有这一款**——只有一款才能保证
+      # 界面中文 100% 用它渲染；混用两种字体会因度量不同导致文字基线错位（上游代码有明确警告）。
+      - name: 校验字体清单含指定的简体中文字体
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="craft-fonts/fonts/manifest.txt"
+          hans_list="$(grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$' | awk -F' *[|] *' '$4 ~ /Hans/ { print $1 }')"
+
+          echo "清单里的 Hans（简体中文）字体："
+          printf '%s\n' "$hans_list" | sed 's/^/  /'
+
+          if ! grep -qxF "$ZH_FONT_FAMILY" <<<"$hans_list"; then
+            echo "::error::清单里没有 $ZH_FONT_FAMILY，界面中文会显示成方块"
+            exit 1
+          fi
+          n="$(printf '%s\n' "$hans_list" | grep -c . || true)"
+          if [ "$n" -ne 1 ]; then
+            echo "::error::清单里有 $n 款 Hans 字体，应恰好 1 款；否则界面中文会混用两种字体、基线错位"
+            exit 1
+          fi
+          test -s "craft-fonts/fonts/$ZH_FONT_DIR/OFL.txt" || { echo "::error::缺少字体许可协议 OFL.txt"; exit 1; }
+
+          # 反向检查：这款字体的 scripts 里必须含 Jpan。
+          # 少了它，界面中文照旧正常，但「往 PDF 里写文字」时这款字体不会进入候选集，
+          # 简体独有字会继续报 "Japanese fallback font has no glyph"。这里显式拦下来，
+          # 免得将来清单格式变化导致上面那行 printf 静默失效。
+          zh_scripts="$(grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$' \
+            | awk -F' *[|] *' -v want="$ZH_FONT_FAMILY" '$1 == want { print $4 }')"
+          echo "  $ZH_FONT_FAMILY 的 scripts = [$zh_scripts]"
+          case ",$(echo "$zh_scripts" | tr -d ' ')," in
+            *,Jpan,*) ;;
+            *)
+              echo "::error::$ZH_FONT_FAMILY 的 scripts 里没有 Jpan —— 往 PDF 里写简体中文仍会失败"
+              echo "::error::（报错形如 Japanese fallback font has no glyph for U+XXXX）"
+              exit 1
+              ;;
+          esac
+          echo "✅ 简体中文字体 = $ZH_FONT_FAMILY（唯一 Hans 字体，许可协议已就位，且含 Jpan → 可用于 PDF 文字替换）"
+
+      # 上游 package.ps1 打包便携版时，会把 craft-fonts/fonts/<目录>/OFL.txt **逐个目录**复制成
+      # OFL-<目录>.txt —— 判据只是"目录存在"，与 manifest 无关。于是清单里早已不用的字体目录，
+      # 也会把它们的许可文件带进便携版（例如思源黑体的 OFL-noto-sans-cjk-sc.txt），造成"分发了一份
+      # 并未分发字体的许可"这种容易让人误解的情况。这里把清单未引用的字体目录删掉即可。
+      # 安全性：crates/fonts/build.rs 只读 manifest.txt 和清单里逐个列出的文件，从不遍历目录。
+      - name: 精简字体目录（只保留清单引用到的字体）
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="craft-fonts/fonts/manifest.txt"
+          removed=0
+          for d in craft-fonts/fonts/*/; do
+            [ -d "$d" ] || continue
+            name="$(basename "$d")"
+            if grep -qF "fonts/$name/" "$manifest"; then
+              echo "  保留 $name"
+            else
+              rm -rf "$d"
+              echo "  移除 $name（清单未引用）"
+              removed=$((removed + 1))
+            fi
+          done
+          echo "已移除 $removed 个未引用的字体目录"
+
+          # 反向确认：清单里逐个列出的字体文件都还在（防止上面删错）
+          while IFS= read -r line; do
+            f="$(printf '%s' "$line" | awk -F' *[|] *' '{print $3}')"
+            if [ -n "$f" ] && [ ! -f "craft-fonts/$f" ]; then
+              echo "::error::清单引用的字体文件不存在：craft-fonts/$f"
+              exit 1
+            fi
+          done < <(grep -v '^[[:space:]]*#' "$manifest" | grep -v '^[[:space:]]*$')
+          echo "✅ 清单引用的字体文件全部就位"
+
+      # 让安装界面能自选安装位置。
+      # 做法：用本仓库 builder/overrides/installer-ui.wxs 整份替换上游的安装界面定义。
+      # （本仓库被检出到 builder/ 子目录，上游源码在 src/，字体在 craft-fonts/。）
+      # 为什么不改上游文件了事：工作流每次都从上游现拉源码，所以覆盖必须每次重新应用。
+      # UPSTREAM_UI_SHA256 是我们写覆盖文件时所依据的上游版本指纹，用来提示上游是否改过界面。
+      - name: 应用「自选安装位置」界面
+        shell: bash
+        env:
+          UPSTREAM_UI_SHA256: 47b593e09ed44b151bb44672b1e8836d9642b22f963da50016ddf7e89e106e7f
+        run: |
+          set -euo pipefail
+          ui="src/packaging/windows/installer-ui.wxs"
+          override="builder/overrides/installer-ui.wxs"
+          test -f "$ui" || { echo "::error::上游没有 $ui（目录结构可能变了）"; exit 1; }
+          test -f "$override" || { echo "::error::本仓库缺少 $override（检查 actions/checkout 的 path 是否为 builder）"; exit 1; }
+
+          before="$(sha256sum "$ui" | cut -d' ' -f1)"
+          echo "上游 installer-ui.wxs sha256: $before"
+          cp "$override" "$ui"
+          after="$(sha256sum "$ui" | cut -d' ' -f1)"
+          echo "应用覆盖后 sha256:         $after"
+
+          for s in InstallLocationBrowser WIXUI_INSTALLDIR INSTALLFOLDER; do
+            grep -q "$s" "$ui" || { echo "::error::覆盖文件里缺少 $s"; exit 1; }
+          done
+          echo "✅ 已启用「自定义安装位置」界面"
+
+          {
+            echo "### 安装位置自选"
+            echo ""
+            echo "- 覆盖文件：\`overrides/installer-ui.wxs\`（sha256 \`${after:0:16}…\`）"
+            echo "- 上游原文件 sha256：\`${before:0:16}…\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$before" != "$UPSTREAM_UI_SHA256" ]; then
+            echo "::warning::上游的 installer-ui.wxs 已经变化（与我们写覆盖文件时的基准不同）。"
+            echo "::warning::本次仍用我们的覆盖版本，构建通常仍可成功；但若上游新增了被 pdfcraft.wxs"
+            echo "::warning::引用的对话框，构建会失败。届时请把 overrides/installer-ui.wxs 与上游重新合并。"
+          fi
+
+      - name: 安装 Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: 缓存 cargo 产物（大幅缩短重复构建时间）
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src -> target
+          key: zh-cjk-windows-x64
+
+      - name: 校验中文词条确实存在
+        shell: bash
+        working-directory: src
+        env:
+          CATALOG: ${{ env.ZH_CATALOG }}
+        run: |
+          set -euo pipefail
+          test -s "$CATALOG" || { echo "::error::缺少 $CATALOG，构建结果不会是中文"; exit 1; }
+          echo "中文词条行数：$(grep -c '' "$CATALOG")"
+          if grep -q '菜单' "$CATALOG"; then
+            echo "已确认词条内含中文字符"
+          else
+            echo "::error::$CATALOG 看起来不含中文，已中止"; exit 1
+          fi
+
+      - name: 安装 WiX 5（用于生成 MSI）
+        shell: pwsh
+        run: dotnet tool install --global wix --version 5.0.2
+
+      # 这里把版本号写进 $GITHUB_ENV：后续所有步骤（含 package.ps1）都能读到，
+      # 而 ${{ env.X }} 这种写法取不到运行时生成的值，所以不要在这之后用 env 上下文引用它。
+      - name: 生成带后缀的版本号
+        shell: bash
+        working-directory: src
+        env:
+          SUFFIX: ${{ needs.resolve.outputs.version_suffix }}
+        run: |
+          set -euo pipefail
+          base="$(grep -A5 '^\[workspace.package\]' Cargo.toml | grep -m1 '^version' | sed 's/.*"\(.*\)".*/\1/')"
+          if [ -z "$base" ]; then echo "::error::无法从 Cargo.toml 读取版本号"; exit 1; fi
+          echo "BUILD_VERSION=${base}-${SUFFIX}" >> "$GITHUB_ENV"
+          echo "PDFCRAFT_VERSION=${base}-${SUFFIX}" >> "$GITHUB_ENV"
+          {
+            echo "### 构建版本"
+            echo ""
+            echo "- 完整版本号：\`${base}-${SUFFIX}\`"
+            echo "- MSI 产品版本号：\`${base}\`（MSI 只接受纯数字，后缀只体现在文件名上）"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 编译并打包（调用官方 package.ps1：MSI + 便携版 zip）
+        shell: pwsh
+        working-directory: src
+        env:
+          PDFCRAFT_BUILD_SHA: ${{ needs.resolve.outputs.sha }}
+          # 嵌入 craft-fonts，并让缺字体直接报错而不是静默跳过
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: '1'
+        run: ./packaging/windows/package.ps1 -Arch x64
+
+      # 校验「自选安装位置」界面真的进了产出的 MSI（而不是只改了源码却没用上）。
+      # 原理：MSI 的对话框名、控件事件参数都存在字符串池里，可直接做字节查找。
+      - name: 校验 MSI 带上了「自选安装位置」界面
+        shell: bash
+        working-directory: src
+        run: |
+          set -euo pipefail
+          msi="$(find dist/release -name '*.msi' -type f | head -1)"
+          test -n "$msi" || { echo "::error::找不到编译出的 MSI"; exit 1; }
+          echo "检查 $msi"
+          for s in InstallLocationBrowser WIXUI_INSTALLDIR SetTargetPath _BrowseProperty; do
+            if LC_ALL=C grep -a -q -F "$s" "$msi"; then
+              echo "  ✅ $s"
+            else
+              echo "::error::MSI 里缺少 $s —— 安装界面覆盖没有生效，已中止发布"
+              exit 1
+            fi
+          done
+          echo "✅ MSI 已包含「自定义安装位置」界面"
+
+      # 第三道防呆：直接检查编译出来的 exe 里有没有嵌进我们指定的简中字体。
+      # 原理：build.rs 会把字体清单生成成 Rust 源码 —— CraftFont { family: "…", .. }，
+      # 所以字体族名以 UTF-8 字符串字面量形式存在于 exe 中，可直接做字节查找。
+      # 没有它就意味着界面中文会变成方块，宁可让构建失败也不发布这种包。
+      # 顺带确认便携版里随附了字体许可协议（分发要求）。
+      - name: 校验 exe 内确实嵌入了指定的简体中文字体
+        shell: bash
+        working-directory: src
+        run: |
+          set -euo pipefail
+          exe="target/windows-package/x64/pdfcraft.exe"
+          if [ ! -f "$exe" ]; then
+            exe="$(find target/windows-package -name pdfcraft.exe -type f 2>/dev/null | head -1)"
+          fi
+          test -n "$exe" && test -f "$exe" || { echo "::error::找不到编译出的 pdfcraft.exe"; exit 1; }
+          echo "检查 $exe（$(du -h "$exe" | cut -f1)）内嵌字体："
+
+          for f in "BIZ UDPGothic" "Shippori Mincho" "$ZH_FONT_FAMILY"; do
+            if LC_ALL=C grep -a -q -F "$f" "$exe"; then echo "  ✅ $f"; else echo "  ❌ $f"; fi
+          done
+
+          if ! LC_ALL=C grep -a -q -F "$ZH_FONT_FAMILY" "$exe"; then
+            echo "::error::exe 里没有嵌入 $ZH_FONT_FAMILY —— 界面中文会显示成方块，已中止发布。"
+            echo "::error::请检查工作流顶部的 ZH_FONT_* 设置和 overrides/fonts/ 下的字体文件。"
+            exit 1
+          fi
+
+          zip="$(find dist/release -name '*portable.zip' -type f | head -1)"
+          test -n "$zip" || { echo "::error::找不到便携版 zip"; exit 1; }
+          lic="OFL-$ZH_FONT_DIR.txt"
+          if LC_ALL=C grep -a -q -F "$lic" "$zip"; then
+            echo "  ✅ 便携版内随附字体许可：$lic"
+          else
+            echo "::error::便携版里没有 $lic —— 字体许可必须随包分发，已中止发布"
+            exit 1
+          fi
+
+          # 第四道防呆：确认这款字体在**编译期生成的字体定义**里带上了 Jpan。
+          # 只有带上 Jpan，它才会进入「往 PDF 里写替换文字」的候选集
+          # （crates/fonts/src/craft.rs 的 document_faces 按 covers("Jpan") 过滤）。
+          # 这里读的是 build.rs 生成的 craft_fonts.rs，比在 exe 里搜字符串更可靠。
+          gen="$(find target -name craft_fonts.rs -path '*out*' -type f 2>/dev/null | head -1)"
+          if [ -z "$gen" ]; then
+            echo "::warning::找不到编译期生成的 craft_fonts.rs，跳过 Jpan 复核"
+          else
+            line="$(grep -F "$ZH_FONT_FAMILY" "$gen" | head -1)"
+            echo "  生成的字体定义：$line"
+            case "$line" in
+              *Jpan*) echo "  ✅ 含 Jpan → 可用于 PDF 文字替换（简体字不再报 no glyph）" ;;
+              *)
+                echo "::error::$ZH_FONT_FAMILY 的脚本声明里没有 Jpan —— 往 PDF 里写简体中文仍会失败"
+                exit 1
+                ;;
+            esac
+          fi
+          echo "✅ 简中字体已嵌入（$ZH_FONT_FAMILY），许可协议已随包分发，脚本声明含 Jpan"
+
+      # 合规：把许可证与声明随分发一起给出。
+      # 上游 package.ps1 会把仓库根目录的 README.md / LICENSE / LICENSE-MIT / LICENSE-APACHE
+      # 复制进便携版 zip，但**不含 NOTICE**；而 NOTICE 里既有版权与商标声明，也有第三方组件清单
+      # （Apache-2.0 第 4(d) 条要求随分发提供其内容）。这里把整套文件单独放成 Release 附件，
+      # 并额外生成一份「本构建改了什么」的说明，让「非官方构建」这一点在包外也能看到。
+      - name: 生成许可证与改动声明
+        shell: bash
+        working-directory: src
+        env:
+          SHA: ${{ needs.resolve.outputs.sha }}
+          REF: ${{ needs.resolve.outputs.ref }}
+        run: |
+          set -euo pipefail
+          dir="dist/release/licenses"
+          rm -rf "$dir"; mkdir -p "$dir"
+
+          for f in LICENSE LICENSE-MIT LICENSE-APACHE NOTICE; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              LICENSE)        cp "$f" "$dir/LICENSE.txt" ;;
+              LICENSE-MIT)    cp "$f" "$dir/LICENSE-MIT.txt" ;;
+              LICENSE-APACHE) cp "$f" "$dir/LICENSE-APACHE.txt" ;;
+              NOTICE)         cp "$f" "$dir/NOTICE.txt" ;;
+            esac
+            echo "  随附 $f"
+          done
+          test -s "$dir/LICENSE-MIT.txt" || { echo "::error::找不到上游 LICENSE-MIT —— 再分发必须随附许可证"; exit 1; }
+          [ -s "$dir/NOTICE.txt" ] || echo "::warning::上游仓库没有 NOTICE 文件"
+
+          cat > "$dir/UNOFFICIAL-BUILD-zh-CN.txt" <<NOTICE_EOF
+          这是基于 PdfCraft 的【非官方】简体中文构建，不是官方发布。
+
+          程序主体为原作者 "ArtCraft Team and the PdfCraft contributors" 的作品，
+          采用 MIT OR Apache-2.0 双许可（全文见同目录 LICENSE-MIT.txt / LICENSE-APACHE.txt，
+          版权、商标与第三方组件声明见 NOTICE.txt）。
+
+          本构建修改了构建配置与**一处源码**（见下），以支持往 PDF 里新增中文文字：
+            1) 界面简体中文字体改为随包嵌入 HarmonyOS Sans SC；该字体在字体清单中的
+               脚本声明为 Hans,Jpan,Latn，因此同时参与 PDF 内文字替换
+               （否则简体独有字会报 "Japanese fallback font has no glyph for U+XXXX"）。
+            2) 安装界面新增「选择安装位置」：欢迎页可直接改路径或点 Browse... 浏览。
+            3) 【源码修改】crates/edit/src/added.rs 新增 CJK 文字绘制分支：往 PDF 里
+               新增中文/日文/韩文时，用 Shippori Mincho 字形生成 Type 3 字体绘制，
+               不再被 win_ansi() 编码成问号。补丁见本仓库 overrides/cjk.patch。
+
+          源码：storytold/pdfcraft @ ${REF:-unknown} (${SHA:-unknown})
+          构建时间：$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          由第三方自动构建，与原项目作者无隶属、赞助或背书关系。本构建未做代码签名。
+
+          ----------------------------------------------------------------------
+
+          This is an UNOFFICIAL Simplified-Chinese build of PdfCraft. It is NOT an official release.
+
+          The application is the work of "ArtCraft Team and the PdfCraft contributors",
+          licensed under MIT OR Apache-2.0 (see LICENSE-MIT.txt / LICENSE-APACHE.txt;
+          copyright, trademark and third-party notices in NOTICE.txt).
+
+          Build configuration and one source file were changed:
+            1) The Simplified-Chinese UI font is embedded as HarmonyOS Sans SC, declared with
+               scripts Hans,Jpan,Latn so it also serves PDF text replacement.
+            2) The installer gained a "choose install location" page.
+            3) [source change] crates/edit/src/added.rs gained a CJK drawing branch: adding
+               Chinese/Japanese/Korean text to a PDF now draws it with Shippori Mincho glyphs
+               as a Type 3 font, instead of being encoded to `?` by win_ansi(). See
+               overrides/cjk.patch.
+
+          Source: storytold/pdfcraft @ ${REF:-unknown} (${SHA:-unknown})
+          Built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          Third-party automated build; not affiliated with or endorsed by the original authors.
+          Not code-signed.
+          NOTICE_EOF
+
+          test -s "$dir/UNOFFICIAL-BUILD-zh-CN.txt" || { echo "::error::改动声明生成失败（文件为空）"; exit 1; }
+          ls -la "$dir"
+          echo "✅ 许可证与改动声明已生成"
+
+      - name: 列出产物
+        shell: bash
+        working-directory: src
+        run: ls -la dist/release/ dist/release/licenses/
+
+      - name: 上传为 Actions 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfcraft-zh-cjk-${{ needs.resolve.outputs.short_sha }}-windows-x64
+          path: |
+            src/dist/release/*.msi
+            src/dist/release/*.zip
+            src/dist/release/licenses/*
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: 创建 / 更新 Release
+        if: needs.resolve.outputs.make_release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # 必须显式指定仓库：本工作流是直接拉上游源码编译的，运行目录本身
+          # 不是 git 仓库（checkout 到了 src/ 和 craft-fonts/ 子目录），
+          # 不指定的话 gh 会因「not a git repository」而失败。
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+          REF: ${{ needs.resolve.outputs.ref }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          set -uo pipefail
+
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "PdfCraft 简体中文版（Windows x64）· 含中文输入修复"
+            echo ""
+            echo "> ⚠️ **非官方构建（unofficial build）** —— 本安装包由第三方自动构建，**不是官方发布**，"
+            echo "> 与原项目作者不存在隶属、赞助或背书关系。"
+            echo "> 程序主体为原作者（ArtCraft Team and the PdfCraft contributors）的作品，"
+            echo "> 采用 MIT OR Apache-2.0 双许可；本构建**修改了构建配置与一处源码**（支持往 PDF 里新增中文）。"
+            echo "> 具体改动见本 Release 附带的 \`UNOFFICIAL-BUILD-zh-CN.txt\`。"
+            echo ""
+            echo "由上游源码自动编译，界面译文已编译进二进制，无需任何额外语言包。"
+            echo ""
+            echo "## ✨ 本版独有：新增中文文字不再显示问号"
+            echo ""
+            echo "上游原版往 PDF 里**新增**中文文字时，非拉丁字符会被编码成 \`?\`（编辑已有文字则正常）。"
+            echo "本构建打了补丁（\`overrides/cjk.patch\`），复用 Shippori Mincho 字形把新增的中文/日文/韩文"
+            echo "画成 Type 3 字体，新增中文文字即可正常显示与复制。"
+            echo ""
+            echo "- 源码来源：\`${UPSTREAM} @ ${REF}\`"
+            echo "- commit：\`${SHA}\`"
+            echo "- 完整版本号：\`${BUILD_VERSION}\`（后缀只出现在文件名里）"
+            echo "- 界面简体中文字体：\`${ZH_FONT_FAMILY}\`（已编译进程序，中文不会渲染成方块）"
+            echo "- 安装时可自选安装位置：欢迎页的 \`Install location\` 处可直接改路径，或点 \`Browse...\` 浏览目录（默认 \`C:\Program Files\PdfCraft\`）"
+            echo "- 未做代码签名：首次运行 Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可"
+            echo "- 与官方 v0.2.1 同版本装过也没关系：MSI 的 \`AllowSameVersionUpgrades\` 会直接替换旧版"
+            echo "- ⚠️ 软件里的「帮助 → 检查更新」指向的是**官方**发布页（那里是英文包），它只适合用来判断上游有没有发新版；**下载请回到本仓库的 Releases 页面**，否则会装回英文版"
+            echo ""
+            echo "## 安装后如何切换到中文"
+            echo ""
+            echo "一般无需操作：应用会自动跟随系统语言，简体中文系统直接就是中文界面。"
+            echo "如果仍是英文，进入 **菜单 → 编辑 → 首选项… → 界面语言 → 简体中文**。"
+            echo ""
+            echo "## 许可证、署名与改动声明"
+            echo ""
+            echo "PdfCraft 采用 **MIT OR Apache-2.0** 双许可。本 Release 附带以下文件（双击下载即可）："
+            echo ""
+            echo "| 文件 | 内容 |"
+            echo "|---|---|"
+            echo "| \`LICENSE-MIT.txt\`、\`LICENSE-APACHE.txt\` | 上游许可证全文 |"
+            echo "| \`NOTICE.txt\` | 上游版权声明、商标说明与第三方组件许可清单 |"
+            echo "| \`UNOFFICIAL-BUILD-zh-CN.txt\` | 本构建的改动说明（非官方声明）|"
+            echo ""
+            echo "便携版 zip 内同时含 \`LICENSE-MIT\`、\`LICENSE-APACHE\`、\`README.md\` 及字体许可文件。"
+            echo ""
+            echo "**界面中文字体署名**：本软件使用 **HarmonyOS Sans 字体**（\`${ZH_FONT_FILE}\`），"
+            echo "由 Huawei Device Co., Ltd. 授权、未经修改地随本软件分发，许可全文见便携版内的"
+            echo "\`OFL-${ZH_FONT_DIR}.txt\`。"
+            echo ""
+            echo "> HarmonyOS Sans fonts are licensed from Huawei Device Co., Ltd."
+            echo ""
+            echo "本构建为非官方第三方构建，与原项目作者无隶属或背书关系；修改了构建配置与一处源码"
+            echo "（crates/edit/src/added.rs，支持往 PDF 里新增中文）。名称 \`PdfCraft\` 仅用于说明本软件来源。"
+          } > "$notes"
+
+          if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，覆盖其中的产物并刷新说明。"
+            gh release upload "$TAG" --repo "$GH_REPO" \
+              src/dist/release/*.msi src/dist/release/*.zip src/dist/release/licenses/* --clobber
+            gh release edit "$TAG" --repo "$GH_REPO" --notes-file "$notes"
+          else
+            gh release create "$TAG" \
+              --repo "$GH_REPO" \
+              --title "PdfCraft 简体中文版 ${BUILD_VERSION} (${SHA:0:7}) · 含中文输入修复 · 非官方构建" \
+              --notes-file "$notes" \
+              --latest \
+              src/dist/release/*.msi src/dist/release/*.zip src/dist/release/licenses/*
+          fi
+
+          echo "下载地址：${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
