@@ -240,17 +240,19 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-          patch_file="builder/overrides/cjk.patch"
+          # 必须用绝对路径：git -C src 会切到 src 目录，相对路径会指向 src/builder/...（不存在）。
+          patch_file="$GITHUB_WORKSPACE/builder/overrides/cjk.patch"
           test -f "$patch_file" || { echo "::error::本仓库缺少 $patch_file"; exit 1; }
 
-          if git -C src apply --check "$patch_file" 2>/dev/null; then
+          # 不吞 stderr，让 git apply 的真实报错直接显示在日志里，方便排查。
+          if git -C src apply --check "$patch_file"; then
             git -C src apply "$patch_file"
             echo "✅ 已应用 CJK 修复补丁（新增中文文字不再显示为问号）"
             grep -q "draw_cjk" src/crates/edit/src/added.rs && echo "   已确认 added.rs 含 draw_cjk" || { echo "::error::补丁应用后未找到 draw_cjk"; exit 1; }
           else
-            echo "::warning::补丁无法干净应用到上游 added.rs（上游可能改动过该文件）。"
-            echo "::warning::本次降级为「纯中文化版」：界面仍为中文，但新增中文文字会退回问号。"
-            echo "::warning::请用上游最新 added.rs 重新生成 overrides/cjk.patch。"
+            echo "::error::补丁无法干净应用到上游 added.rs（上游可能改动过该文件，或补丁路径有误）。"
+            echo "::error::本次降级为「纯中文化版」：界面仍为中文，但新增中文文字会退回问号。"
+            echo "::error::请用上游最新 added.rs 重新生成 overrides/cjk.patch。"
           fi
 
       # 把简体中文界面字体换成本仓库自带的字体（默认鸿蒙 HarmonyOS Sans SC）。
