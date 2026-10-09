@@ -1,0 +1,295 @@
+diff --git a/crates/edit/src/added.rs b/crates/edit/src/added.rs
+index 6537f92..ca8efc8 100644
+--- a/crates/edit/src/added.rs
++++ b/crates/edit/src/added.rs
+@@ -10,7 +10,10 @@
+ use std::collections::HashMap;
+ 
+ use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
+-use pdfcraft_fonts::{GlyphError, GlyphOutline, ShapedCluster, arabic_glyph, helvetica_width, literal, shape_arabic, win_ansi};
++use pdfcraft_fonts::{
++    CraftFont, GlyphError, GlyphOutline, ShapedCluster, arabic_glyph, document_japanese_fonts_for_style, helvetica_width,
++    japanese_glyph_from, literal, shape_arabic, win_ansi,
++};
+ use unicode_bidi::{Level, ParagraphBidiInfo};
+ 
+ use crate::{EditError, check, contents, n, page_list, place_tagged};
+@@ -239,6 +242,13 @@ fn is_arabic(c: char) -> bool {
+     matches!(u32::from(c), 0x0600..=0x06FF | 0x0750..=0x077F | 0x0870..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFC)
+ }
+ 
++/// A character WinAnsi can't encode and Arabic doesn't cover: Chinese, Japanese, Korean and other
++/// non-Latin scripts drawn through the Japanese fallback Type 3 font. Most Simplified Chinese
++/// characters share codepoints with Japanese kanji, so Shippori Mincho covers them.
++fn is_cjk(c: char) -> bool {
++    !is_bidi_control(c) && !is_arabic(c) && pdfcraft_fonts::win_ansi_byte(c).is_none()
++}
++
+ /// Direction marks, embeddings, overrides and isolates: they steer the order and are not drawn.
+ fn is_bidi_control(c: char) -> bool {
+     matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+@@ -528,6 +538,229 @@ fn type3_arabic(doc: &mut Document, clusters: &[&ShapedCluster], outlines: &Hash
+     doc.add(Object::Dict(font))
+ }
+ 
++/// Whether a string has any character that must be drawn by the CJK fallback (Chinese, Japanese,
++/// Korean, and other non-Latin scripts that WinAnsi and the Arabic face don't cover).
++fn needs_cjk(text: &str) -> bool {
++    text.chars().any(is_cjk)
++}
++
++/// The number of characters a CJK fallback Type 3 font can hold (single-byte codes 1–240).
++const MAX_CJK_GLYPHS: usize = 240;
++
++/// A CJK fallback Type 3 font: one glyph per character, from the craft-fonts Japanese document
++/// face (Shippori Mincho). Returns the font's resource name and a map from character to byte code.
++struct CjkFallback {
++    name: String,
++    codes: Vec<(char, u8, f64)>,
++}
++
++/// The first of `faces` that has a glyph for every one of `chars`, else the first face.
++fn cjk_face<'a>(faces: &[&'a CraftFont], chars: &[char]) -> Option<&'a CraftFont> {
++    faces
++        .iter()
++        .copied()
++        .find(|face| chars.iter().all(|ch| japanese_glyph_from(face, *ch).is_ok()))
++        .or_else(|| faces.first().copied())
++}
++
++fn cjk_no_font() -> EditError {
++    EditError::Invalid(
++        "this text needs PdfCraft's Japanese fallback font, which this build doesn't include \
++         (official releases do; to build it in, set CRAFT_FONTS_DIR to a craft-fonts checkout)"
++            .into(),
++    )
++}
++
++fn cjk_glyph_error(e: GlyphError, ch: char) -> EditError {
++    match e {
++        GlyphError::NoFont => cjk_no_font(),
++        GlyphError::Missing => EditError::Invalid(format!("the Japanese fallback font has no glyph for U+{:04X}", ch as u32)),
++        GlyphError::TooComplex => EditError::Invalid(format!("the Japanese fallback glyph U+{:04X} is too complex", ch as u32)),
++    }
++}
++
++/// The Type 3 path for one glyph: its outline at 1000 units per em.
++fn cjk_path(face: &CraftFont, ch: char) -> Result<(Vec<u8>, f64), EditError> {
++    let glyph = japanese_glyph_from(face, ch).map_err(|e| cjk_glyph_error(e, ch))?;
++    let scale = 1000.0;
++    let mut out = format!("{} 0 0 0 0 1000 1000 d1\n", n(glyph.width * scale)).into_bytes();
++    for contour in glyph.contours {
++        let Some(first) = contour.first() else { continue };
++        out.extend_from_slice(format!("{} {} m\n", n(first[0] * scale), n(first[1] * scale)).as_bytes());
++        for p in contour.iter().skip(1) {
++            out.extend_from_slice(format!("{} {} l\n", n(p[0] * scale), n(p[1] * scale)).as_bytes());
++        }
++        out.extend_from_slice(b"h\n");
++    }
++    out.extend_from_slice(b"f\n");
++    Ok((out, glyph.width))
++}
++
++/// Build a Type 3 fallback font for the CJK characters in `text`, drawing them from the Japanese
++/// document face. Registers the font in `fonts` and returns the fallback.
++fn type3_cjk(doc: &mut Document, text: &str, serif: bool, fonts: &mut Dict, taken: &Dict) -> Result<CjkFallback, EditError> {
++    let faces = document_japanese_fonts_for_style(serif, false);
++    let mut chars: Vec<char> = Vec::new();
++    for ch in text.chars() {
++        if is_cjk(ch) && !chars.contains(&ch) {
++            if chars.len() >= MAX_CJK_GLYPHS {
++                return Err(EditError::Invalid("the text uses too many different characters; split it into several boxes".into()));
++            }
++            chars.push(ch);
++        }
++    }
++    if chars.is_empty() {
++        return Err(EditError::Invalid("the text has no CJK characters".into()));
++    }
++    // The faces differ in coverage, so use the best face that has every character. When none has
++    // them all, the best face reports the character it lacks.
++    let face = cjk_face(&faces, &chars).ok_or_else(cjk_no_font)?;
++    let mut codes = Vec::with_capacity(chars.len());
++    let mut charprocs = Dict::new();
++    let mut widths = Vec::with_capacity(chars.len());
++    let mut differences = vec![Object::Int(1)];
++    let mut cmap = String::from(
++        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapType 2 def\n1 begincodespacerange\n<01> <FF>\nendcodespacerange\n",
++    );
++    cmap.push_str(&format!("{} beginbfchar\n", chars.len()));
++    for (i, ch) in chars.into_iter().enumerate() {
++        let code = u8::try_from(i + 1).map_err(|_| EditError::Invalid("too many CJK characters".into()))?;
++        let glyph_name = format!("g{code:02X}");
++        let (path, width) = cjk_path(face, ch)?;
++        let mut pd = Dict::new();
++        pd.set(b"Length".to_vec(), path.len() as i64);
++        let proc_ref = doc.add(Object::Stream(Stream::from_raw(pd, path)));
++        charprocs.set(glyph_name.as_bytes().to_vec(), Object::Ref(proc_ref));
++        differences.push(Object::name(&glyph_name));
++        widths.push(Object::Real((width * 1000.0).round()));
++        let mut units = [0u16; 2];
++        let encoded = ch.encode_utf16(&mut units);
++        let hex: String = encoded.iter().map(|u| format!("{u:04X}")).collect();
++        cmap.push_str(&format!("<{code:02X}> <{hex}>\n"));
++        codes.push((ch, code, width));
++    }
++    cmap.push_str("endbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
++    let mut cmap_dict = Dict::new();
++    cmap_dict.set(b"Length".to_vec(), cmap.len() as i64);
++    let cmap_ref = doc.add(Object::Stream(Stream::from_raw(cmap_dict, cmap.into_bytes())));
++    let mut encoding = Dict::new();
++    encoding.set(b"Type".to_vec(), Object::name("Encoding"));
++    encoding.set(b"Differences".to_vec(), Object::Array(differences));
++    let mut font = Dict::new();
++    font.set(b"Type".to_vec(), Object::name("Font"));
++    font.set(b"Subtype".to_vec(), Object::name("Type3"));
++    font.set(b"Name".to_vec(), Object::name("PCCjk"));
++    let mut descriptor = Dict::new();
++    descriptor.set(b"Type".to_vec(), Object::name("FontDescriptor"));
++    descriptor.set(b"FontName".to_vec(), Object::name(&format!("{}-{}", face.family, face.style).replace(' ', "")));
++    descriptor.set(b"FontFamily".to_vec(), Object::String(PdfString::literal(face.family.as_bytes().to_vec())));
++    descriptor.set(b"Flags".to_vec(), Object::Int(if face.family.contains("Mincho") { 6 } else { 4 }));
++    descriptor.set(b"ItalicAngle".to_vec(), Object::Int(0));
++    font.set(b"FontDescriptor".to_vec(), Object::Ref(doc.add(Object::Dict(descriptor))));
++    font.set(b"FontBBox".to_vec(), Object::Array(vec![Object::Int(0), Object::Int(-300), Object::Int(1000), Object::Int(1000)]));
++    font.set(
++        b"FontMatrix".to_vec(),
++        Object::Array(vec![Object::Real(0.001), Object::Int(0), Object::Int(0), Object::Real(0.001), Object::Int(0), Object::Int(0)]),
++    );
++    font.set(b"FirstChar".to_vec(), Object::Int(1));
++    font.set(b"LastChar".to_vec(), Object::Int(codes.len() as i64));
++    font.set(b"Widths".to_vec(), Object::Array(widths));
++    font.set(b"Encoding".to_vec(), Object::Dict(encoding));
++    font.set(b"CharProcs".to_vec(), Object::Dict(charprocs));
++    font.set(b"ToUnicode".to_vec(), Object::Ref(cmap_ref));
++    // A name no font on the page has, so items never replace each other's fonts.
++    let mut name = String::from("PCCjk");
++    let mut suffix = 0usize;
++    while taken.contains(name.as_bytes()) || fonts.contains(name.as_bytes()) {
++        suffix = suffix.saturating_add(1);
++        name = format!("PCCjk{suffix}");
++    }
++    fonts.set(name.as_bytes().to_vec(), Object::Dict(font));
++    Ok(CjkFallback { name, codes })
++}
++
++/// Encode `text` with the CJK fallback: Latin characters are `None` (drawn by the item's own
++/// font), CJK characters map to their single-byte code.
++fn cjk_encode(fallback: &CjkFallback, ch: char) -> Option<u8> {
++    fallback.codes.iter().find(|(c, _, _)| *c == ch).map(|(_, code, _)| *code)
++}
++
++/// Draw a text item that has CJK (Chinese/Japanese/Korean) in it. Latin text uses the item's
++/// standard font; CJK characters come from a Type 3 fallback font whose outlines are the Japanese
++/// document face (no font file is embedded), with a ToUnicode map for copy and search.
++fn draw_cjk(doc: &mut Document, t: &AddedText, latin: &str, taken: &Dict, fonts: &mut Dict, out: &mut Vec<u8>) -> Result<(), EditError> {
++    let r = text_rect(t);
++    let serif = t.family == Family::Times;
++    let fallback = type3_cjk(doc, &t.text, serif, fonts, taken)?;
++    let [cr, cg, cb] = t.color.map(|v| v.clamp(0.0, 1.0));
++    out.extend(format!("BT {} {} {} rg\n", n(cr), n(cg), n(cb)).bytes());
++    for (i, line) in lines(t).iter().enumerate() {
++        // Split the line into Latin and CJK runs, so each runs in its own font.
++        let runs = split_cjk_runs(line);
++        // The line's total width: Latin via the item's font, CJK via the fallback's advances.
++        let w = runs
++            .iter()
++            .map(|run| match run {
++                CjkRun::Latin(s) => t.family.width(s, t.size, t.bold),
++                CjkRun::Cjk(s) => s.chars().map(|ch| fallback.codes.iter().find(|(c, _, _)| *c == ch).map_or(0.0, |(_, _, w)| *w)).sum::<f64>() * t.size,
++            })
++            .sum::<f64>();
++        let x = match t.align {
++            Align::Left | Align::Justify => r[0],
++            Align::Center => r[0] + ((r[2] - r[0]) - w) / 2.0,
++            Align::Right => r[2] - w,
++        };
++        let y = r[3] - (i as f64 * 1.2 + 0.95) * t.size;
++        let spaces = line.matches(' ').count();
++        let tw = if t.align == Align::Justify && i + 1 < lines(t).len() && spaces > 0 { ((r[2] - r[0]) - w).max(0.0) / spaces as f64 } else { 0.0 };
++        let mut pen = x;
++        for run in &runs {
++            match run {
++                CjkRun::Latin(s) => {
++                    out.extend(format!("/{latin} {} Tf {} Tw 1 0 0 1 {} {} Tm ", n(t.size), n(tw), n(pen), n(y)).bytes());
++                    out.extend(literal(&win_ansi(s)));
++                    out.extend_from_slice(b" Tj\n");
++                    pen += t.family.width(s, t.size, t.bold) + tw * s.matches(' ').count() as f64;
++                }
++                CjkRun::Cjk(s) => {
++                    out.extend(format!("/{} {} Tf ", fallback.name, n(t.size)).bytes());
++                    for ch in s.chars() {
++                        let Some(code) = cjk_encode(&fallback, ch) else { continue };
++                        let adv = fallback.codes.iter().find(|(c, _, _)| *c == ch).map_or(0.0, |(_, _, w)| *w) * t.size;
++                        out.extend(format!("1 0 0 1 {} {} Tm ", n(pen), n(y)).bytes());
++                        out.extend(literal(&[code]));
++                        out.extend_from_slice(b" Tj\n");
++                        pen += adv;
++                    }
++                }
++            }
++        }
++    }
++    out.extend_from_slice(b"ET\n");
++    Ok(())
++}
++
++/// A run of a line: either Latin text drawn in the item's font, or CJK text in the fallback.
++enum CjkRun {
++    Latin(String),
++    Cjk(String),
++}
++
++/// Split a line into alternating Latin and CJK runs.
++fn split_cjk_runs(line: &str) -> Vec<CjkRun> {
++    let mut runs: Vec<CjkRun> = Vec::new();
++    for ch in line.chars() {
++        let cjk = is_cjk(ch);
++        match runs.last_mut() {
++            Some(CjkRun::Latin(s)) if !cjk => s.push(ch),
++            Some(CjkRun::Cjk(s)) if cjk => s.push(ch),
++            _ if cjk => runs.push(CjkRun::Cjk(ch.to_string())),
++            _ => runs.push(CjkRun::Latin(ch.to_string())),
++        }
++    }
++    runs
++}
++
+ /// Content and resources for an item; `view` maps display space to user space. `taken` holds the
+ /// page's font names. `existing`: the item is being replaced, so a build without the Arabic face
+ /// keeps drawing its Arabic as `?`, as before Arabic was supported, rather than refusing to move it.
+@@ -553,6 +786,14 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
+                 out.extend_from_slice(b"Q\n");
+                 return Ok((out, res));
+             }
++            // CJK (Chinese/Japanese/Korean) text: drawn with a Type 3 fallback font whose glyphs
++            // are the Japanese document face, so characters no longer turn into `?`.
++            if needs_cjk(&t.text) {
++                draw_cjk(doc, t, &name, taken, &mut fonts, &mut out)?;
++                res.set(b"Font".to_vec(), Object::Dict(fonts));
++                out.extend_from_slice(b"Q\n");
++                return Ok((out, res));
++            }
+             res.set(b"Font".to_vec(), Object::Dict(fonts));
+             let r = text_rect(t);
+             let [cr, cg, cb] = t.color.map(|v| v.clamp(0.0, 1.0));
+@@ -834,12 +1075,16 @@ pub fn delete_content(doc: &mut Document, page: usize, index: usize) -> Result<(
+     Ok(())
+ }
+ 
+-/// The Type 3 fonts an Arabic item's stream shows text with. Each item has its own (`draw_arabic`
+-/// names them so), so they go when the item is replaced or deleted.
++/// The Type 3 fonts an Arabic or CJK item's stream shows text with. Each item has its own
++/// (`draw_arabic` / `draw_cjk` name them so), so they go when the item is replaced or deleted.
+ fn own_fonts(doc: &Document, obj: ObjRef) -> Vec<Vec<u8>> {
+     let Object::Stream(s) = &*doc.get(obj) else { return Vec::new() };
+     let Ok(data) = s.decoded() else { return Vec::new() };
+-    data.split(u8::is_ascii_whitespace).filter_map(|w| w.strip_prefix(b"/")).filter(|w| w.starts_with(b"PCAr")).map(<[u8]>::to_vec).collect()
++    data.split(u8::is_ascii_whitespace)
++        .filter_map(|w| w.strip_prefix(b"/"))
++        .filter(|w| w.starts_with(b"PCAr") || w.starts_with(b"PCCjk"))
++        .map(<[u8]>::to_vec)
++        .collect()
+ }
+ 
+ fn drop_fonts(doc: &Document, res: &mut Dict, names: &[Vec<u8>]) {
