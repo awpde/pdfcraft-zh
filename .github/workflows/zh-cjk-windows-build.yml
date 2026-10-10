@@ -459,6 +459,27 @@ jobs:
             echo "::error::$CATALOG 看起来不含中文，已中止"; exit 1
           fi
 
+          # 条件追加补充译文：只补上游 zh-hans.tsv 确实缺的条目，整键（context+source）精确比对，
+          # 避免子串误判（如 comment menu⇥Edit 误命中 Edit text）。上游将来自己补了这些翻译时，
+          # 这里会跳过、不产生重复键。补充译文存于本仓库 overrides/zh-hans-补充译文.tsv。
+          SUPP="$GITHUB_WORKSPACE/builder/overrides/zh-hans-补充译文.tsv"
+          if [ -s "$SUPP" ]; then
+            before="$(grep -c '' "$CATALOG")"
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              ctx="$(printf '%s' "$line" | awk -F'\t' '{print $1}')"
+              src="$(printf '%s' "$line" | awk -F'\t' '{print $2}')"
+              found="$(awk -F'\t' -v c="$ctx" -v s="$src" '$1==c && $2==s {print "yes"; exit}' "$CATALOG")"
+              if [ "$found" != "yes" ]; then
+                printf '%s\n' "$line" >> "$CATALOG"
+              fi
+            done < "$SUPP"
+            after="$(grep -c '' "$CATALOG")"
+            echo "补充译文：$before → $after 行（新增 $((after - before)) 条）"
+          else
+            echo "无补充译文文件（$SUPP），跳过"
+          fi
+
       - name: 安装 WiX 5（用于生成 MSI）
         shell: pwsh
         run: dotnet tool install --global wix --version 5.0.2
