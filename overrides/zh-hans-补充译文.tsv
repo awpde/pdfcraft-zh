@@ -1,0 +1,42 @@
+	A button	一个按钮
+	A link	一个链接
+	A script	一个脚本
+	Add {what}	添加{what}
+	Align fields	对齐字段
+	Another file dialog is still open. Finish with it first.	另一个文件对话框仍处于打开状态。请先完成它。
+	Basic constraints	基本约束
+	Change document properties	修改文档属性
+	Couldn't show the file picker. Please try again.	无法显示文件选择器。请重试。
+	Distribute fields	分布字段
+	Files are combined in this order. Leave Pages empty to take every page.	文件按此顺序合并。将「页面」留空以包含每一页。
+	H / Space (hold)	H / 空格（按住）
+	Home / End	Home / End
+	Inserted text	插入的文本
+	Mark differences	标记差异
+	Mark for redaction	标记为遮盖
+	Mark pages for redaction	将页面标记为遮盖
+	Match field sizes	匹配字段大小
+	Place saved {what}	放置已保存的{what}
+	Redo {action}	重做{action}
+	Remove saved {what}	移除已保存的{what}
+	Run form script	运行表单脚本
+	SHA-1 digest	SHA-1 摘要
+	SHA-256 digest	SHA-256 摘要
+	Scripted content must be usable with a keyboard and assistive technology. Check the document's scripts.	含脚本的内容必须可通过键盘和辅助技术使用。请检查文档的脚本。
+	Squiggly	波浪线
+	Table rows belong directly in a table or its head, body or foot. Fix the table's tags.	表格行必须直接位于表格或其表头、表体、表尾中。请修正表格的标签。
+	That didn't work: an internal error stopped it ({m}).	操作失败：内部错误已将其停止（{m}）。
+	The Windows store's digital IDs couldn't be listed: {e}	无法列出 Windows 存储区的数字身份：{e}
+	The document changed while you were choosing a file, so nothing was changed.	文档在你选择文件时发生了变化，因此未作任何更改。
+	The document was closed before it could be saved.	文档在保存之前已被关闭。
+	The pages were extracted but not deleted, because the document changed while you were choosing a folder.	页面已提取但未删除，因为文档在你选择文件夹时发生了变化。
+	Undo {action}	撤销{action}
+	Use {what}	使用{what}
+	{who} in this document tried to open an address PdfCraft won't open: {e}.	文档中的{who}尝试打开 PdfCraft 不会打开的地址：{e}。
+	{who} in this document tried to open an address PdfCraft won't open: {e}. Only web (http, https) and email (mailto) links open from documents.	文档中的{who}尝试打开 PdfCraft 不会打开的地址：{e}。文档中只能打开网页（http、https）和电子邮件（mailto）链接。
+	Certificate authority	证书颁发机构
+	End entity	最终实体
+action wizard	Start	开始
+certificate	Subject	主题
+comment menu	Edit	编辑
+signature pad	Type	键入
