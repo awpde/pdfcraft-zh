@@ -1,5 +1,5 @@
 diff --git a/crates/edit/src/added.rs b/crates/edit/src/added.rs
-index 6537f92..ca8efc8 100644
+index 40a2770..1d7f12f 100644
 --- a/crates/edit/src/added.rs
 +++ b/crates/edit/src/added.rs
 @@ -10,7 +10,10 @@
@@ -14,21 +14,35 @@ index 6537f92..ca8efc8 100644
  use unicode_bidi::{Level, ParagraphBidiInfo};
  
  use crate::{EditError, check, contents, n, page_list, place_tagged};
-@@ -239,6 +242,13 @@ fn is_arabic(c: char) -> bool {
-     matches!(u32::from(c), 0x0600..=0x06FF | 0x0750..=0x077F | 0x0870..=0x08FF | 0xFB50..=0xFDFF | 0xFE70..=0xFEFC)
- }
- 
+@@ -243,6 +246,13 @@
+ /// with the craft-fonts Arabic face (#125), or Arabic that the face can't draw (or that has no
+ /// face to draw it). Page-content tools refuse such text; the Add-text editor keeps it open.
+ pub fn first_undrawable(t: &AddedText) -> Option<char> {
++    // This build draws CJK (Chinese/Japanese/Korean) text with the Japanese fallback Type 3 font
++    // (`draw_cjk`), which upstream doesn't, so those characters are drawable here and must not be
++    // refused (#125). Judge it the way `draw_cjk` splits a line: what it hands to WinAnsi can still
++    // fail, which is exactly a character that is neither CJK nor WinAnsi-encodable.
++    if needs_cjk(&t.text) {
++        return t.text.chars().find(|c| !is_cjk(*c) && pdfcraft_fonts::win_ansi_byte(*c).is_none());
++    }
+     // Arabic that nothing can draw: there's no face, or the face lacks it.
+     if let Some(c) = t.text.chars().find(|c| shaped_arabic(*c) && !pdfcraft_fonts::arabic_has(*c)) {
+         return Some(c);
+@@ -265,6 +275,13 @@
+ /// An Arabic character the face shapes and draws (U+061C, a direction mark, is dropped).
+ fn shaped_arabic(c: char) -> bool {
+     is_arabic(c) && !is_bidi_control(c)
++}
++
 +/// A character WinAnsi can't encode and Arabic doesn't cover: Chinese, Japanese, Korean and other
 +/// non-Latin scripts drawn through the Japanese fallback Type 3 font. Most Simplified Chinese
 +/// characters share codepoints with Japanese kanji, so Shippori Mincho covers them.
 +fn is_cjk(c: char) -> bool {
 +    !is_bidi_control(c) && !is_arabic(c) && pdfcraft_fonts::win_ansi_byte(c).is_none()
-+}
-+
+ }
+ 
  /// Direction marks, embeddings, overrides and isolates: they steer the order and are not drawn.
- fn is_bidi_control(c: char) -> bool {
-     matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-@@ -528,6 +538,229 @@ fn type3_arabic(doc: &mut Document, clusters: &[&ShapedCluster], outlines: &Hash
+@@ -556,6 +573,229 @@
      doc.add(Object::Dict(font))
  }
  
@@ -258,22 +272,22 @@ index 6537f92..ca8efc8 100644
  /// Content and resources for an item; `view` maps display space to user space. `taken` holds the
  /// page's font names. `existing`: the item is being replaced, so a build without the Arabic face
  /// keeps drawing its Arabic as `?`, as before Arabic was supported, rather than refusing to move it.
-@@ -553,6 +786,14 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
-                 out.extend_from_slice(b"Q\n");
-                 return Ok((out, res));
-             }
-+            // CJK (Chinese/Japanese/Korean) text: drawn with a Type 3 fallback font whose glyphs
-+            // are the Japanese document face, so characters no longer turn into `?`.
-+            if needs_cjk(&t.text) {
-+                draw_cjk(doc, t, &name, taken, &mut fonts, &mut out)?;
+@@ -577,6 +817,14 @@
+             fonts.set(name.clone().into_bytes(), Object::Dict(font));
+             if t.text.chars().any(is_arabic) && (pdfcraft_fonts::document_arabic_font().is_some() || !existing) {
+                 draw_arabic(doc, t, &name, taken, &mut fonts, &mut out)?;
 +                res.set(b"Font".to_vec(), Object::Dict(fonts));
 +                out.extend_from_slice(b"Q\n");
 +                return Ok((out, res));
 +            }
-             res.set(b"Font".to_vec(), Object::Dict(fonts));
-             let r = text_rect(t);
-             let [cr, cg, cb] = t.color.map(|v| v.clamp(0.0, 1.0));
-@@ -834,12 +1075,16 @@ pub fn delete_content(doc: &mut Document, page: usize, index: usize) -> Result<(
++            // CJK (Chinese/Japanese/Korean) text: drawn with a Type 3 fallback font whose glyphs
++            // are the Japanese document face, so characters no longer turn into `?`.
++            if needs_cjk(&t.text) {
++                draw_cjk(doc, t, &name, taken, &mut fonts, &mut out)?;
+                 res.set(b"Font".to_vec(), Object::Dict(fonts));
+                 out.extend_from_slice(b"Q\n");
+                 return Ok((out, res));
+@@ -873,12 +1121,16 @@
      Ok(())
  }
  
