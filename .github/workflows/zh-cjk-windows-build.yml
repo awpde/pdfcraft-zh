@@ -233,9 +233,17 @@ jobs:
       # 原理：上游 added.rs 对非 WinAnsi 字符一律用 win_ansi() 编码成 '?'；本补丁给
       # draw() 新增一条 CJK 分支，复用 japanese_glyph_from()（Shippori Mincho 日文宋体）
       # 把每个中文字形画成 Type 3 字体，与上游对阿拉伯文的 draw_arabic() 做法一致。
-      # 补丁存于本仓库 overrides/cjk.patch，基于上游 added.rs 的 commit 生成；
-      # 若上游改动该文件导致补丁无法干净应用，则降级为「纯中文化版」（仍能正常用，
-      # 只是新增中文文字会退回问号）并告警，绝不静默产出坏的包。
+      # 补丁存于本仓库 overrides/cjk.patch，基于上游 added.rs 的 commit 生成。
+      #
+      # 关键设计：补丁应用失败时**必须让整个构建失败（exit 1）**，不能降级后继续。
+      # 早期版本在这里走"降级为纯中文化版 + 告警"，但 step 退出码仍是 0 → CI 显示绿色
+      # 对勾 → 照常发布一个标题写着「含中文输入修复」、实际没打补丁的包。用户装上后
+      # 才发现新增中文还是问号。本 workflow 的其他 5 道校验关卡都是"宁可失败也不发布
+      # 坏包"，这一处曾是唯一例外，现已对齐。
+      #
+      # 失败后的影响：zh-cjk 这条版本线当天出一个红色的失败构建（不会发布任何 release），
+      # 独立的 zh-hans workflow 不受影响，仍会正常产出纯中文化版。看到红色构建说明
+      # 上游改动了 added.rs，需按 README / 交接文档重新生成 overrides/cjk.patch。
       - name: 应用「新增中文文字」修复补丁
         shell: bash
         run: |
@@ -253,8 +261,11 @@ jobs:
             grep -q "draw_cjk" src/crates/edit/src/added.rs && echo "   已确认 added.rs 含 draw_cjk" || { echo "::error::补丁应用后未找到 draw_cjk"; exit 1; }
           else
             echo "::error::补丁无法干净应用到上游 added.rs（上游可能改动过该文件，或补丁路径有误）。"
-            echo "::error::本次降级为「纯中文化版」：界面仍为中文，但新增中文文字会退回问号。"
-            echo "::error::请用上游最新 added.rs 重新生成 overrides/cjk.patch。"
+            echo "::error::本 workflow 是「含中文输入修复」版，补丁没生效就没有发布意义 —— 已中止构建，不产出任何 release。"
+            echo "::error::如需临时要一个能用的中文版，请改用独立的 zh-hans workflow（纯中文化版，新增中文文字仍会是问号）。"
+            echo "::error::修复方法：用上游最新 added.rs 重新生成 overrides/cjk.patch，详见 README / 交接文档 §8.2。"
+            echo "::error::（注意：重新生成后必须保留 .gitattributes 的 '*.patch -text'，否则 Windows runner 会把补丁转成 CRLF 导致 git apply 再次失败。）"
+            exit 1
           fi
 
       # 把简体中文界面字体换成本仓库自带的字体（默认鸿蒙 HarmonyOS Sans SC）。
