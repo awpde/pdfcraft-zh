@@ -432,6 +432,28 @@ jobs:
             echo "::warning::引用的对话框，构建会失败。届时请把 overrides/installer-ui.wxs 与上游重新合并。"
           fi
 
+      # 替换 PDF 文档图标（资源 ID 2，即文件关联里 PDF 文件的图标）：把上游的绿色文档图标
+      # 换成我们仓库 overrides/icons/ 下的红色版。纯文件覆盖，不改源码。build.rs 会把它
+      # 作为资源 2 嵌入 pdfcraft.exe，installer 用 pdfcraft.exe,-2 引用它。
+      - name: 替换 PDF 文档图标
+        shell: bash
+        run: |
+          set -euo pipefail
+          ico="src/assets/app-icon/pdfcraft-document.ico"
+          svg="src/assets/app-icon/pdfcraft-document.svg"
+          src_ico="$GITHUB_WORKSPACE/builder/overrides/icons/pdfcraft-document.ico"
+          src_svg="$GITHUB_WORKSPACE/builder/overrides/icons/pdfcraft-document.svg"
+
+          test -f "$ico" || { echo "::error::上游没有 $ico"; exit 1; }
+          test -f "$src_ico" || { echo "::error::本仓库缺少 $src_ico"; exit 1; }
+          cp "$src_ico" "$ico"
+          echo "✅ 已替换文档图标 ico（绿色 → 红色）"
+
+          if [ -f "$src_svg" ]; then
+            cp "$src_svg" "$svg"
+            echo "✅ 已替换文档图标 svg"
+          fi
+
       - name: 安装 Rust (stable, x86_64-pc-windows-msvc)
         uses: dtolnay/rust-toolchain@stable
         with:
