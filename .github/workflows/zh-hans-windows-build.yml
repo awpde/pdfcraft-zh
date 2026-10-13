@@ -417,6 +417,18 @@ jobs:
           cp "$src_doc" "$doc_ico"
           echo "✅ 已替换 PDF 文档图标"
 
+          # 窗口图标：main.rs 用 include_bytes! 内嵌这张 PNG（编译期），不是 exe 资源，
+          # 所以替换 ico 对它无效，必须单独替换这个文件。
+          hicolor="src/assets/app-icon/hicolor/256x256/apps/ai.storyteller.pdfcraft.png"
+          src_hicolor="$GITHUB_WORKSPACE/builder/overrides/icons/hicolor-256-app.png"
+          if [ -f "$hicolor" ]; then
+            test -f "$src_hicolor" || { echo "::error::本仓库缺少 $src_hicolor"; exit 1; }
+            cp "$src_hicolor" "$hicolor"
+            echo "✅ 已替换窗口图标 PNG（编译期内嵌的那张）"
+          else
+            echo "::warning::上游没有 $hicolor，跳过窗口图标替换"
+          fi
+
           if [ -f "$src_doc_svg" ]; then
             cp "$src_doc_svg" "$doc_svg"
             echo "✅ 已替换文档图标 svg"
