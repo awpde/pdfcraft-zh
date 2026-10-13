@@ -1,20 +1,16 @@
 diff --git a/crates/edit/src/added.rs b/crates/edit/src/added.rs
-index 9f13047..c956ee3 100644
+index 42f7867..f7dc856 100644
 --- a/crates/edit/src/added.rs
 +++ b/crates/edit/src/added.rs
-@@ -11,7 +11,10 @@
- use std::collections::{HashMap, HashSet};
- 
- use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
--use pdfcraft_fonts::{GlyphError, GlyphOutline, ShapedCluster, ShapedScript, Std14, literal, shape_arabic, shape_thai, shaped_glyph, win_ansi};
-+use pdfcraft_fonts::{
-+    CraftFont, GlyphError, GlyphOutline, ShapedCluster, ShapedScript, Std14, document_japanese_fonts_for_style,
-+    japanese_glyph_from, literal, shape_arabic, shape_thai, shaped_glyph, win_ansi,
-+};
+@@ -14,6 +14,7 @@ use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
+ use pdfcraft_fonts::{
+     GlyphError, GlyphOutline, ShapedCluster, ShapedScript, helvetica_width, literal, shape_arabic, shape_thai, shaped_glyph, win_ansi,
+ };
++use pdfcraft_fonts::{CraftFont, document_japanese_fonts_for_style, japanese_glyph_from};
  use unicode_bidi::{Level, ParagraphBidiInfo};
  
  use crate::{EditError, MarkKind, check, contents, n, page_list, place_tagged};
-@@ -324,6 +327,13 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
+@@ -311,6 +312,13 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
          let rest = AddedText { text: t.text.chars().filter(|c| !is_thai(*c)).collect(), ..t.clone() };
          return first_undrawable(&rest);
      }
@@ -28,7 +24,7 @@ index 9f13047..c956ee3 100644
      // Arabic that nothing can draw: there's no face, or the face lacks it.
      if let Some(c) = t.text.chars().find(|c| shaped_arabic(*c) && !pdfcraft_fonts::arabic_has(*c)) {
          return Some(c);
-@@ -348,6 +358,13 @@ fn shaped_arabic(c: char) -> bool {
+@@ -335,6 +343,13 @@ fn shaped_arabic(c: char) -> bool {
      is_arabic(c) && !is_bidi_control(c)
  }
  
@@ -42,7 +38,7 @@ index 9f13047..c956ee3 100644
  /// Direction marks, embeddings, overrides and isolates: they steer the order and are not drawn.
  fn is_bidi_control(c: char) -> bool {
      matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-@@ -696,6 +713,229 @@ fn type3_shaped(doc: &mut Document, clusters: &[&ShapedCluster], outlines: &Hash
+@@ -683,6 +698,229 @@ fn type3_shaped(doc: &mut Document, clusters: &[&ShapedCluster], outlines: &Hash
      doc.add(Object::Dict(font))
  }
  
@@ -209,7 +205,7 @@ index 9f13047..c956ee3 100644
 +        let w = runs
 +            .iter()
 +            .map(|run| match run {
-+                CjkRun::Latin(s) => t.family.width(s, t.size, t.bold, t.italic),
++                CjkRun::Latin(s) => t.family.width(s, t.size, t.bold),
 +                CjkRun::Cjk(s) => s.chars().map(|ch| fallback.codes.iter().find(|(c, _, _)| *c == ch).map_or(0.0, |(_, _, w)| *w)).sum::<f64>() * t.size,
 +            })
 +            .sum::<f64>();
@@ -228,7 +224,7 @@ index 9f13047..c956ee3 100644
 +                    out.extend(format!("/{latin} {} Tf {} Tw 1 0 0 1 {} {} Tm ", n(t.size), n(tw), n(pen), n(y)).bytes());
 +                    out.extend(literal(&win_ansi(s)));
 +                    out.extend_from_slice(b" Tj\n");
-+                    pen += t.family.width(s, t.size, t.bold, t.italic) + tw * s.matches(' ').count() as f64;
++                    pen += t.family.width(s, t.size, t.bold) + tw * s.matches(' ').count() as f64;
 +                }
 +                CjkRun::Cjk(s) => {
 +                    out.extend(format!("/{} {} Tf ", fallback.name, n(t.size)).bytes());
@@ -272,7 +268,7 @@ index 9f13047..c956ee3 100644
  /// Content and resources for an item; `view` maps display space to user space. `taken` holds the
  /// page's font names. `existing`: the item is being replaced, so a build without the Arabic face
  /// keeps drawing its Arabic as `?`, as before Arabic was supported, rather than refusing to move it.
-@@ -721,6 +961,14 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
+@@ -708,6 +946,14 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
                  out.extend_from_slice(b"Q\n");
                  return Ok((out, res));
              }
@@ -287,7 +283,7 @@ index 9f13047..c956ee3 100644
              res.set(b"Font".to_vec(), Object::Dict(fonts));
              let r = text_rect(t);
              let [cr, cg, cb] = t.color.map(|v| v.clamp(0.0, 1.0));
-@@ -1078,7 +1326,7 @@ pub fn delete_content(doc: &mut Document, page: usize, index: usize) -> Result<(
+@@ -1065,7 +1311,7 @@ pub fn delete_content(doc: &mut Document, page: usize, index: usize) -> Result<(
  fn own_fonts(doc: &Document, obj: ObjRef) -> Vec<Vec<u8>> {
      let Object::Stream(s) = &*doc.get(obj) else { return Vec::new() };
      let Ok(data) = s.decoded() else { return Vec::new() };
