@@ -1,15 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Original, text-only native MSI dialogs. No third-party UI artwork or custom-action DLLs.
-     Full UI gets welcome (with the desktop-shortcut checkbox)/progress/outcome screens; /qn and /qb stay unattended.
+     Full UI gets welcome (with the desktop-shortcut and PDF context-menu checkboxes)/progress/outcome screens; /qn and /qb stay unattended.
 
-     简体中文版附加改动（相对上游 packaging/windows/installer-ui.wxs）：
+     简体中文版附加改动（相对上游 packaging/windows/installer-ui.wxs，基于上游最新版合并）：
        1. 新增「选择安装位置」能力：欢迎页多一个可编辑的安装路径 + “Browse...” 按钮，
           按钮打开一个新的目录浏览对话框（InstallLocationBrowser）。
        2. 为此声明 WIXUI_INSTALLDIR 并把 INSTALLFOLDER 标记为 secure —— 否则用户在
           未提权的界面上选的路径，在提权执行安装时会被 Windows Installer 丢掉。
-       3. 除以上外，其余对话框、控件与文案与上游完全一致：
-          上游的 packaging/windows/test-msi.ps1 会逐项核对界面元素
-          （桌面快捷方式复选框、Finish 标签、完成页文案等），改文案会让构建自检失败。 -->
+       3. 上游后续新增的控件（如 PdfContextMenu 右键菜单复选框）原样保留，仅下移避让；
+          上游的 packaging/windows/test-msi.ps1 会逐项核对界面元素，缺控件会让构建自检失败。 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>
     <UI Id="PdfcraftInstallerUI">
@@ -27,33 +26,35 @@
 
       <Dialog Id="InstallWelcome" Width="370" Height="215" Title="[ProductName] Setup">
         <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Install [ProductName]" />
-        <Control Id="Description" Type="Text" X="20" Y="50" Width="330" Height="32"
-            Text="Setup will install [ProductName] for all users and add it to the Start menu. You can change the install location below." />
+        <Control Id="Description" Type="Text" X="20" Y="55" Width="330" Height="40"
+            Text="Setup will install [ProductName] for all users and add it to the Start menu. Click Install to continue." />
 
         <!-- 安装位置：可直接编辑，也可按 Browse 选目录 -->
-        <Control Id="LocationLabel" Type="Text" X="20" Y="88" Width="330" Height="12" TabSkip="no"
+        <Control Id="LocationLabel" Type="Text" X="20" Y="98" Width="330" Height="12" TabSkip="no"
             Text="Install &amp;location:" />
-        <Control Id="LocationPath" Type="PathEdit" X="20" Y="102" Width="238" Height="18"
+        <Control Id="LocationPath" Type="PathEdit" X="20" Y="112" Width="238" Height="18"
             Property="WIXUI_INSTALLDIR" Indirect="yes" />
-        <Control Id="LocationBrowse" Type="PushButton" X="266" Y="102" Width="82" Height="18" Text="&amp;Browse...">
+        <Control Id="LocationBrowse" Type="PushButton" X="266" Y="112" Width="82" Height="18" Text="&amp;Browse...">
           <Publish Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1" />
           <Publish Event="SpawnDialog" Value="InstallLocationBrowser" Order="2" />
         </Control>
 
-        <Control Id="DesktopShortcut" Type="CheckBox" X="20" Y="128" Width="330" Height="17"
+        <Control Id="DesktopShortcut" Type="CheckBox" X="20" Y="138" Width="330" Height="17"
             Property="INSTALLDESKTOPSHORTCUT" CheckBoxValue="1" Text="Create a &amp;desktop shortcut" />
-        <Control Id="Install" Type="PushButton" X="195" Y="180" Width="75" Height="23" Default="yes" ElevationShield="yes" Text="&amp;Install">
+        <Control Id="PdfContextMenu" Type="CheckBox" X="20" Y="156" Width="330" Height="17"
+            Property="INSTALLPDFCONTEXTMENU" CheckBoxValue="1" Text="Add &quot;&amp;Edit with PdfCraft&quot; to the right-click menu of PDF files" />
+        <Control Id="Install" Type="PushButton" X="195" Y="185" Width="75" Height="23" Default="yes" ElevationShield="yes" Text="&amp;Install">
           <Publish Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
           <Publish Event="EndDialog" Value="Return" Order="2" />
         </Control>
-        <Control Id="Cancel" Type="PushButton" X="280" Y="180" Width="70" Height="23" Cancel="yes" Text="Cancel">
+        <Control Id="Cancel" Type="PushButton" X="280" Y="185" Width="70" Height="23" Cancel="yes" Text="Cancel">
           <Publish Event="EndDialog" Value="Exit" />
         </Control>
       </Dialog>
 
       <!-- ==== 简体中文版：目录浏览对话框（结构照抄 WiX 官方 BrowseDlg，去掉图标/位图装饰）====
-           确定：SetTargetPath [_BrowseProperty] 把选中路径应用到目录。
-           取消：先 Reset 丢弃改动，再关闭——因为下面的控件是 Indirect 直接编辑目录目标的。 -->
+            确定：SetTargetPath [_BrowseProperty] 把选中路径应用到目录。
+            取消：先 Reset 丢弃改动，再关闭——因为下面的控件是 Indirect 直接编辑目录目标的。 -->
       <Dialog Id="InstallLocationBrowser" Width="370" Height="270" Title="[ProductName] Setup">
         <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Text="{\InstallerTitle}Change install location" />
         <Control Id="ComboLabel" Type="Text" X="20" Y="50" Width="60" Height="12" TabSkip="no" Text="Look &amp;in:" />
