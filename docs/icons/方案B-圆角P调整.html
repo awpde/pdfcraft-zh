@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>方案B 图标 - 圆角P 手动调整</title>
+<style>
+  body { font-family: sans-serif; background: #2b2b2b; color: #eee; margin: 20px; }
+  .wrap { display: flex; gap: 30px; align-items: flex-start; flex-wrap: wrap; }
+  .stage { position: relative; width: 420px; height: 420px; background: #1e1e1e; border-radius: 8px; }
+  #svgwrap { position: absolute; inset: 30px; }
+  .controls { line-height: 2.3; min-width: 380px; }
+  .controls label { display: inline-block; width: 130px; }
+  .controls input[type=range] { width: 190px; vertical-align: middle; }
+  .btn { margin: 6px 4px 0 0; padding: 6px 14px; background: #b5281f; color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
+  #info { margin-top: 12px; color: #ccc; font-size: 13px; }
+  .group { border-top: 1px solid #444; margin-top: 10px; padding-top: 8px; }
+  .group h3 { margin: 4px 0; font-size: 14px; color: #aaa; }
+  .hint { color: #999; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage">
+    <div id="svgwrap">
+      <svg id="icon" width="100%" height="100%" viewBox="0 0 64 64">
+        <g transform="translate(2 1) scale(2.8)" stroke="#b5281f" stroke-width="0.6" stroke-linejoin="round" fill="none">
+          <path id="paper" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="#ffffff" />
+          <path id="fold" d="M14 2v6h6" fill="#f6d8d8" />
+        </g>
+        <!-- 圆角 P 矢量路径（用 stroke 画轮廓，linejoin/linecap round 让拐角圆润） -->
+        <path id="p" d="M29 8 L29 53 L36 53 A11 11 0 0 0 36 31 L29 31 L29 8 Z"
+              fill="none" stroke="#b5281f" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </div>
+  </div>
+  <div class="controls">
+    <div class="group">
+      <h3>P 的轮廓（可拖 + 调圆角）</h3>
+      <div><label>笔划粗细：</label><input type="range" id="pwidth" min="3" max="12" step="0.5" value="7"></div>
+      <div><label>竖线宽度：</label><input type="range" id="pbarw" min="4" max="16" step="0.5" value="7"></div>
+      <div><label>碗的半径：</label><input type="range" id="pbowl" min="6" max="18" step="0.5" value="11"></div>
+      <div><label>碗的高度：</label><input type="range" id="pbowlh" min="10" max="30" step="0.5" value="22"></div>
+      <div><label>左上角圆角：</label><input type="range" id="pr" min="0" max="10" step="0.5" value="3.5"></div>
+      <div class="hint">「左上角圆角」= P 竖线顶部的圆弧，调到和文件圆角一致约 3.5</div>
+    </div>
+    <div class="group">
+      <h3>整体位置与颜色</h3>
+      <div><label>X 位置：</label><input type="range" id="px" min="15" max="40" step="0.25" value="28"></div>
+      <div><label>Y 位置：</label><input type="range" id="py" min="5" max="20" step="0.25" value="8"></div>
+      <div><label>P 颜色：</label><input type="color" id="pcolor" value="#b5281f"></div>
+    </div>
+    <div>
+      <button class="btn" id="showbtn">显示当前参数</button>
+    </div>
+    <div id="info">拖动滑块调圆角、粗细、位置</div>
+  </div>
+</div>
+
+<script>
+  const p = document.getElementById('p');
+  const svg = document.getElementById('icon');
+  const info = document.getElementById('info');
+  const $ = id => document.getElementById(id);
+  const els = {
+    pwidth: $('pwidth'), pbarw: $('pbarw'), pbowl: $('pbowl'), pbowlh: $('pbowlh'),
+    pr: $('pr'), px: $('px'), py: $('py'), pcolor: $('pcolor')
+  };
+
+  function buildPath() {
+    const w = parseFloat(els.pbarw.value);   // 竖线宽
+    const bw = parseFloat(els.pwidth.value); // 描边粗
+    const bowl = parseFloat(els.pbowl.value);   // 碗半径
+    const bowlh = parseFloat(els.pbowlh.value); // 碗高度
+    const r = parseFloat(els.pr.value);       // 左上圆角
+    const x = parseFloat(els.px.value);
+    const y = parseFloat(els.py.value);
+
+    // P 的轮廓（中心线）：
+    // 竖线从 (x, y+bowlh) 往上到 (x, y)，碗形从竖线顶向右画半圆环再回来
+    // 用 path 描述：竖线 + 碗（右侧大半圆）
+    // 简化：P = 竖线（矩形）+ 碗（半圆环）
+    // 这里用 stroke 的圆角特性：linecap/join round 自动让拐角圆润
+    const x0 = x, yTop = y, yBot = y + bowlh + w;
+    // 碗中心线在 y = y + bowl/2 附近
+    const bowlCy = y + bowl;   // 碗的圆心 y
+    const d = [
+      `M ${x} ${yBot}`,                 // 底部起点
+      `L ${x} ${y + r}`,                // 竖线到顶部圆角起点
+      `A ${r} ${r} 0 0 1 ${x + r} ${y}`, // 左上角圆角
+      `L ${x + bowl} ${y}`,             // 顶边到碗右侧
+      `A ${bowl} ${bowl} 0 0 1 ${x + bowl} ${y + 2*bowl}`,  // 碗右半圆
+      `L ${x + r} ${y + 2*bowl}`,
+      `A ${r} ${r} 0 0 1 ${x} ${y + 2*bowl + r}`,
+      `Z`
+    ].join(' ');
+    return d;
+  }
+
+  function apply() {
+    p.setAttribute('d', buildPath());
+    p.setAttribute('stroke-width', els.pwidth.value);
+    p.setAttribute('stroke', els.pcolor.value);
+  }
+
+  Object.values(els).forEach(el => el.addEventListener('input', apply));
+
+  $('showbtn').addEventListener('click', () => {
+    info.textContent = '竖线宽=' + els.pbarw.value +
+      ' 笔划粗=' + els.pwidth.value +
+      ' 碗半径=' + els.pbowl.value +
+      ' 碗高=' + els.pbowlh.value +
+      ' 左上圆角=' + els.pr.value +
+      ' 位置x=' + els.px.value + ' y=' + els.py.value +
+      ' 颜色=' + els.pcolor.value;
+  });
+
+  apply();
+</script>
+</body>
+</html>
