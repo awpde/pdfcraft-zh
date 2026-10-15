@@ -14,12 +14,17 @@
   采用 **MIT OR Apache-2.0** 双许可
   （[LICENSE-MIT](https://github.com/storytold/pdfcraft/blob/main/LICENSE-MIT)、
   [LICENSE-APACHE](https://github.com/storytold/pdfcraft/blob/main/LICENSE-APACHE)）。
-- 本仓库**只修改构建配置，未修改程序源码**：
+- 本仓库的改动如下：
   1. 界面简体中文字体改为随包嵌入 HarmonyOS Sans SC（上游官方 Windows 包缺失该字体，
      会导致简体中文显示成方块）；
   2. 该字体的脚本声明为 `Hans,Jpan,Latn`，使其同时参与 PDF 内文字替换
      （否则简体独有字会报 `Japanese fallback font has no glyph for U+XXXX`）；
-  3. 安装界面新增「选择安装位置」。
+  3. 安装界面新增「选择安装位置」；
+  4. 「含中文输入修复」版（release 标题含 `zh-cjk`）**额外对上游
+     `crates/edit/src/added.rs` 应用一处源码补丁**，让「新增中文文字」能正常显示
+     ——上游至今不支持此能力（见上游 issue #455）。补丁原文见 `overrides/cjk.patch`，
+     改动逐条列在随包的 `UNOFFICIAL-BUILD-zh-CN.txt` 里。
+     「纯中文化」版（`zh-hans`）**不修改任何源码**。
 - 名称 `PdfCraft` 仅用于说明本软件来源，不构成对其名称或商标的任何主张。
 - 随每个 Release 一并分发的 `LICENSE-MIT.txt`、`LICENSE-APACHE.txt`、`NOTICE.txt`
   是上游许可证与声明**原文**；`UNOFFICIAL-BUILD-zh-CN.txt` 说明本构建具体改了什么。
@@ -36,8 +41,13 @@ PdfCraft 把界面译文用 `include_str!()` **编译进二进制**，所以界�
 **下载安装包**：打开本仓库的 [Releases](../../releases) 页面，下载 `*.msi` 双击安装即可。
 
 **手动触发一次构建**：
-`Actions` → 左侧选「构建简体中文版 (Windows)」→ `Run workflow`。
-`upstream_ref` 保持默认的 `main` 即可（填不含中文的旧 tag 会被自动跳过）。
+`Actions` → 左侧选工作流 → `Run workflow`。
+
+- 「构建简体中文版 (Windows)」= 纯中文化版，`upstream_ref` 保持默认的 `main` 即可
+  （填不含中文的旧 tag 会被自动跳过）。
+- 「构建简体中文版 + 中文输入修复 (Windows)」= 含中文输入修复版。
+  它的补丁只能精确对准一个上游版本，**请填上游的 Release tag**（如 `v0.8.0`），
+  填 `main` 通常会因补丁不匹配而中止。
 
 ## 自动跟版
 
@@ -46,8 +56,8 @@ PdfCraft 把界面译文用 `include_str!()` **编译进二进制**，所以界�
 
 两个已知注意事项：
 
-- 上游当前最新 Release（v0.2.1）不含中文，因此定时任务会持续「空转」跳过，
-  这是有意的防呆设计。等上游发布带中文的版本就会自动出包。
+- 若上游某个 Release 不含简体中文词条，定时任务会「空转」跳过 —— 这是有意的防呆设计，
+  不会产出英文包。
 - 公开仓库连续 60 天无提交时 GitHub 会自动停用定时任务且不通知，所以工作流里
   带了一个 `keepalive` 保活步骤，会自动补空提交重置计时。
 
@@ -58,6 +68,14 @@ PdfCraft 把界面译文用 `include_str!()` **编译进二进制**，所以界�
 - 软件里的 **帮助 → 检查更新** 指向的是**官方**发布页（英文包），
   适合用来判断上游有没有发新版，但**不要用它下载**，请回到本仓库 Releases。
 - 本仓库仅修改构建配置，未修改上游源码；上游更新后无需手动同步本仓库。
+
+## 维护本仓库
+
+面向接手维护的人 / agent：**[`docs/维护指南.md`](docs/)** —— 里面有上游跟版的处置流程、
+「新增中文文字」补丁的重新生成方法（`tools/regen-cjk-patch.py`）、三处图标的机制、
+构建日志核对清单，以及 Windows / PowerShell 踩坑集。
+
+上游更新后请先读那份文档，不要直接改 workflow。
 
 ## 许可证、署名与改动声明
 
