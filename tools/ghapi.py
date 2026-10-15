@@ -87,7 +87,8 @@ def put_content(repo, path, data, message, branch="main", sha=None):
     return api(f"repos/{repo}/contents/{urllib.parse.quote(path)}", method="PUT", **p)
 
 
-def delete_content(repo, path, message, branch="main"):
-    """删除文件。需要 message 和 branch。"""
-    return api(f"repos/{repo}/contents/{urllib.parse.quote(path)}", method="DELETE",
-               message=message, branch=branch)
+def delete_content(repo, path, message, branch="main", sha=None):
+    """删除文件。GitHub 要求必须同时给 message、branch 和当前文件的 sha。"""
+    p = {"message": message, "branch": branch,
+         "sha": sha or sha_of(repo, path)}
+    return api(f"repos/{repo}/contents/{urllib.parse.quote(path)}", method="DELETE", **p)
