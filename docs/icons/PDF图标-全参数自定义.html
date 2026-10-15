@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PDF 图标 - 全参数自定义</title>
+<style>
+  body { font-family: sans-serif; background: #202020; color: #eee; margin: 20px; }
+  h2 { font-size: 15px; color: #ddd; }
+  .wrap { display: flex; gap: 30px; align-items: flex-start; flex-wrap: wrap; }
+  .stage { position: relative; width: 420px; height: 420px; border-radius: 8px; }
+  #svgwrap { position: absolute; inset: 30px; }
+  .controls { line-height: 2.3; min-width: 400px; max-height: 600px; overflow-y: auto; }
+  .controls label { display: inline-block; width: 135px; }
+  .controls input[type=range] { width: 200px; vertical-align: middle; }
+  .controls select, .controls input[type=color] { background: #333; color: #eee; border: 1px solid #555; }
+  .btn { margin: 6px 4px 0 0; padding: 6px 14px; background: #b5281f; color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
+  #info { margin-top: 12px; color: #ffd; font-size: 13px; background:#333; padding:8px; border-radius:6px; word-break:break-all; }
+  .group { border-top: 1px solid #444; margin-top: 10px; padding-top: 8px; }
+  .group h3 { margin: 4px 0; font-size: 13px; color: #aaa; }
+  .hint { color: #999; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage" id="stagebg">
+    <div id="svgwrap">
+      <svg id="icon" width="100%" height="100%" viewBox="0 0 64 64">
+        <g id="papergroup" stroke="#b5281f" stroke-width="0.6" stroke-linejoin="round" fill="none">
+          <path id="paper" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="#ffffff" />
+          <path id="fold" d="M14 2v6h6" fill="#f6d8d8" />
+        </g>
+        <text id="p" x="29.25" y="55.75" font-family="Impact, 'Arial Black', sans-serif" font-size="66.7" font-weight="700" fill="#b5281f" text-anchor="middle">P</text>
+      </svg>
+    </div>
+  </div>
+  <div class="controls">
+    <div class="group">
+      <h3>背景色</h3>
+      <div><label>画布背景：</label><input type="color" id="bgcolor" value="#efe9dc"></div>
+      <div class="hint">默认 #efe9dc = 方案 A 的米白纸面色</div>
+    </div>
+
+    <div class="group">
+      <h3>P 的位置与大小（也可鼠标直接拖）</h3>
+      <div><label>字号：</label><input type="range" id="size" min="20" max="90" step="0.5" value="66.7"></div>
+      <div><label>X 位置：</label><input type="range" id="xpos" min="10" max="54" step="0.25" value="29.25"></div>
+      <div><label>Y 位置：</label><input type="range" id="ypos" min="40" max="62" step="0.25" value="55.75"></div>
+    </div>
+
+    <div class="group">
+      <h3>字体</h3>
+      <div><label>字体：</label>
+        <select id="font">
+          <option value="Impact, 'Arial Black', sans-serif" selected>Impact（窄粗）</option>
+          <option value="'Arial Black', Impact, sans-serif">Arial Black</option>
+          <option value="Arial, sans-serif">Arial</option>
+          <option value="'Segoe UI', Arial, sans-serif">Segoe UI</option>
+          <option value="Verdana, sans-serif">Verdana</option>
+          <option value="Georgia, serif">Georgia（衬线）</option>
+          <option value="'Times New Roman', serif">Times New Roman（衬线）</option>
+          <option value="Consolas, monospace">Consolas（等宽）</option>
+        </select>
+      </div>
+      <div><label>字重：</label>
+        <select id="weight">
+          <option value="700" selected>粗体</option>
+          <option value="400">常规</option>
+          <option value="900">特粗</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>颜色</h3>
+      <div><label>P 颜色：</label><input type="color" id="pcolor" value="#b5281f"></div>
+      <div><label>纸面颜色：</label><input type="color" id="papercolor" value="#ffffff"></div>
+      <div><label>描边颜色：</label><input type="color" id="strokecolor" value="#b5281f"></div>
+      <div><label>折角颜色：</label><input type="color" id="foldcolor" value="#f6d8d8"></div>
+    </div>
+
+    <div class="group">
+      <h3>纸面样式</h3>
+      <div><label>描边粗细：</label><input type="range" id="strokew" min="0.2" max="2" step="0.1" value="0.6"></div>
+      <div><label>折角显示：</label><input type="checkbox" id="showfold" checked></div>
+    </div>
+
+    <div>
+      <button class="btn" id="showbtn">显示当前参数</button>
+      <button class="btn" id="resetbtn" style="background:#555">重置</button>
+    </div>
+    <div id="info">调好点「显示当前参数」复制给我</div>
+  </div>
+</div>
+
+<script>
+  const p = document.getElementById('p');
+  const paper = document.getElementById('paper');
+  const fold = document.getElementById('fold');
+  const papergroup = document.getElementById('papergroup');
+  const svg = document.getElementById('icon');
+  const info = document.getElementById('info');
+  const $ = id => document.getElementById(id);
+
+  const els = {
+    bgcolor: $('bgcolor'),
+    size: $('size'), xpos: $('xpos'), ypos: $('ypos'),
+    font: $('font'), weight: $('weight'),
+    pcolor: $('pcolor'), papercolor: $('papercolor'),
+    strokecolor: $('strokecolor'), foldcolor: $('foldcolor'),
+    strokew: $('strokew'), showfold: $('showfold')
+  };
+
+  const defaults = {
+    bgcolor: '#efe9dc',
+    size: '66.7', xpos: '29.25', ypos: '55.75',
+    font: "Impact, 'Arial Black', sans-serif", weight: '700',
+    pcolor: '#b5281f', papercolor: '#ffffff',
+    strokecolor: '#b5281f', foldcolor: '#f6d8d8',
+    strokew: '0.6', showfold: true
+  };
+
+  function apply() {
+    document.getElementById('stagebg').style.background = els.bgcolor.value;
+    p.setAttribute('font-size', els.size.value);
+    p.setAttribute('x', els.xpos.value);
+    p.setAttribute('y', els.ypos.value);
+    p.setAttribute('font-family', els.font.value);
+    p.setAttribute('font-weight', els.weight.value);
+    p.setAttribute('fill', els.pcolor.value);
+    paper.setAttribute('fill', els.papercolor.value);
+    paper.setAttribute('stroke', els.strokecolor.value);
+    fold.setAttribute('fill', els.foldcolor.value);
+    fold.setAttribute('stroke', els.strokecolor.value);
+    papergroup.setAttribute('stroke-width', els.strokew.value);
+    fold.style.display = els.showfold.checked ? '' : 'none';
+  }
+
+  function svgPoint(e) {
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX; pt.y = e.clientY;
+    return pt.matrixTransform(svg.getScreenCTM().inverse());
+  }
+
+  Object.values(els).forEach(el => {
+    if (el.type === 'checkbox') el.addEventListener('change', apply);
+    else el.addEventListener('input', apply);
+  });
+
+  let dragging = false;
+  p.addEventListener('mousedown', e => { dragging = true; e.preventDefault(); });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const pt = svgPoint(e);
+    els.xpos.value = pt.x.toFixed(2);
+    els.ypos.value = pt.y.toFixed(2);
+    apply();
+  });
+  window.addEventListener('mouseup', () => { dragging = false; });
+
+  $('showbtn').addEventListener('click', () => {
+    info.textContent = '背景=' + els.bgcolor.value +
+      ' | 字号=' + els.size.value + ' 位置x=' + els.xpos.value + ' y=' + els.ypos.value +
+      ' | 字体=' + els.font.options[els.font.selectedIndex].text + ' 字重=' + els.weight.value +
+      ' | P色=' + els.pcolor.value + ' 纸面=' + els.papercolor.value +
+      ' 描边=' + els.strokecolor.value + '/' + els.strokew.value +
+      ' 折角=' + els.foldcolor.value + ' 折角显示=' + (els.showfold.checked ? '是' : '否');
+  });
+
+  $('resetbtn').addEventListener('click', () => {
+    for (const k in defaults) {
+      const el = els[k];
+      if (el.type === 'checkbox') el.checked = defaults[k];
+      else el.value = defaults[k];
+    }
+    apply();
+    info.textContent = '已重置';
+  });
+
+  apply();
+</script>
+</body>
+</html>
