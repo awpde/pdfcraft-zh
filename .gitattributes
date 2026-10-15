@@ -4,3 +4,8 @@
 # 译文 tsv 追加时同理会被污染。
 *.patch -text
 *.tsv -text
+
+# 图标是二进制，明确禁止任何行尾转换（避免 Windows 上 checkout 时被改坏）。
+# binary = -diff -merge -text
+*.png binary
+*.ico binary
