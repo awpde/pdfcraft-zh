@@ -7,6 +7,25 @@
 
 ---
 
+## 0. 如果你是从聊天窗口接手（没有仓库工作目录）
+
+按这个顺序读，**这些都是公开链接，不需要登录**：
+
+1. 本文件
+   <https://raw.githubusercontent.com/awpde/pdfcraft-zh/main/AGENTS.md>
+2. 完整维护知识
+   <https://raw.githubusercontent.com/awpde/pdfcraft-zh/main/docs/%E7%BB%B4%E6%8A%A4%E6%8C%87%E5%8D%97.md>
+3. 图标相关（改图标才需要）
+   <https://raw.githubusercontent.com/awpde/pdfcraft-zh/main/docs/icons/README.md>
+4. 姊妹仓库 PhotoCraft 的入口
+   <https://raw.githubusercontent.com/awpde/photocraft-zh/main/AGENTS.md>
+
+> 仓库页面：<https://github.com/awpde/pdfcraft-zh>（文件多时可直接在网页上浏览）
+
+**读完之后先别动手**：把理解的现状和打算做的事说出来，确认无误再执行。
+
+---
+
 ## 1. 这个仓库是什么
 
 **一句话**：这里没有任何 PdfCraft 代码，只有一条 GitHub Actions 流水线 ——
