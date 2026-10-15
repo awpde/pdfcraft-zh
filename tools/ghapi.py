@@ -85,3 +85,9 @@ def put_content(repo, path, data, message, branch="main", sha=None):
     if sha:
         p["sha"] = sha
     return api(f"repos/{repo}/contents/{urllib.parse.quote(path)}", method="PUT", **p)
+
+
+def delete_content(repo, path, message, branch="main"):
+    """删除文件。需要 message 和 branch。"""
+    return api(f"repos/{repo}/contents/{urllib.parse.quote(path)}", method="DELETE",
+               message=message, branch=branch)
