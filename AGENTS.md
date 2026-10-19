@@ -38,12 +38,45 @@
 | 上游 | `storytold/pdfcraft`（MIT OR Apache-2.0，作者 storytold / ArtCraft） |
 | 构建仓库 | `awpde/pdfcraft-zh`（本仓库） |
 | 姊妹仓库 | `awpde/photocraft-zh`，**另有一份自己的 `docs/维护指南.md` 和 `AGENTS.md`** |
-| 两个版本 | `zh-cjk`（含中文输入修复，用户实际在用）/ `zh-hans`（纯中文化） |
-| 触发 | 每天 UTC 22:00 自动跟上游**最新 Release tag**；也可手动指定 ref |
+| 两个版本 | `zh-hans`（纯中文化，**每日自动跟版，用户日常在用**）/ `zh-cjk`（含中文输入修复，**⚠️ 定时触发已于 2026-10-19 停用，只能手动构建**，见 §1.1） |
+| 触发 | `zh-hans`：每天 UTC 22:00 自动 + 手动<br>`zh-cjk`：**只有手动** |
 | 产物 | MSI + 便携版 zip，每个包都带许可证与「非官方构建」声明四件套 |
 
-**上游更新非常频繁**（2026-10-08 的 v0.4.0 → 10-14 的 v0.8.0，一周 4 个版本）。
+**上游更新非常频繁**（2026-10-02 的 v0.1.0 → 10-18 的 v0.9.0，**平均 1.8 天一版**）。
 下面的故障是**常态，不是异常**。
+
+---
+
+## 1.1 ★ zh-cjk 的定时构建已停用（2026-10-19），恢复方法在这
+
+**现状：`zh-cjk` 只有手动触发，每天自动跟版的是 `zh-hans`。**
+
+**为什么停**：用户日常只做**合并 / 删页 / 涂黑**，这三样纯中文化版都有。
+唯一需要补丁的是「新增中文文字」，而它是整个仓库里**唯一需要人工维护**的环节 ——
+上游 1.8 天一版，每发一版就要重新生成一次 `overrides/cjk.patch`，
+而且**上游不会接手**（他们的 `AGENTS.md` §1.1 明令禁止捆绑中文 CJK 字体，与补丁思路冲突，
+相关 issue #455 至今 open）。为一个用不到的功能每 1.8 天做一次人工维护，不划算。
+
+**如果你看到 zh-cjk 没有定时构建，那是故意的，不是坏了。**
+
+**恢复每日自动跟版**（约 5 分钟，两处改动）：
+
+1. 先为当前最新 tag 重新生成补丁，否则第一次跑**必然失败**（这是设计如此）：
+   ```bash
+   python tools/regen-cjk-patch.py <最新tag> --push
+   python tools/regen-cjk-patch.py --check-ref <最新tag>     # 确认补丁适用
+   ```
+2. 手动触发一次验证：`gh workflow run zh-cjk-windows-build.yml --repo awpde/pdfcraft-zh -f upstream_ref=<最新tag>`，
+   等它跑完，**按铁律 3.1 回读日志**确认补丁真的应用了
+3. 验证通过后，把 workflow 里那段注释掉的 `schedule:` 取消注释（文件顶部有醒目提示）：
+   ```
+   #   schedule:
+   #     - cron: '0 22 * * *'
+   ```
+4. 把本节的现状描述改回「每日自动」
+
+> **别跳过第 1 步**。补丁只对准一个上游版本（见铁律 3.2），
+> 直接恢复 schedule 只会让用户每天收一封构建失败邮件。
 
 ---
 
@@ -98,7 +131,8 @@ python tools/fetchlog.py awpde/pdfcraft-zh <run_id> "已应用 CJK|已确认 add
 
 | 场景 | 怎么做 |
 |---|---|
-| 上游跟版失败 | 先跑 `tools/regen-cjk-patch.py --check-ref <tag>` 定位是补丁还是界面挂了，再照 `docs/维护指南.md` §6 对症处理 |
+| 用户想恢复 zh-cjk 每日自动跟版 | 照 §1.1 的四步做。**第一步必须先重新生成补丁**，否则第一次跑必挂 |
+| zh-cjk 构建失败 | 先跑 `tools/regen-cjk-patch.py --check-ref <tag>` 定位是补丁还是界面挂了，再照 `docs/维护指南.md` §6 对症处理 |
 | 要重新生成补丁 | `python tools/regen-cjk-patch.py <tag>` → 看自检输出 → `--push` → 手动触发一次构建验证 |
 | 改补丁脚本 | 改完**必须**跑 `python tools/verify_regen.py <tag>`，确认脚本仍忠实复现现有补丁 |
 | 用户报图标不对 | 先读 `docs/icons/README.md`。**软件有三处图标来源、要维护四个文件**，窗口 PNG 最容易漏 |
@@ -141,5 +175,6 @@ python tools/fetchlog.py awpde/pdfcraft-zh <run_id> "已应用 CJK|已确认 add
 - 不要只看构建是绿的就宣布完成（见 §3.1）
 - 不要为了"顺手"改 workflow 里的锚点常量 —— 它们带唯一性校验，报错时先查上游改了什么
 - 不要把上游的英文字体/英文界面"顺手优化"掉 —— 中文化与图标替换就是本仓库存在的全部理由
+- **不要因为「zh-cjk 没有定时构建」就去把它加回来** —— 那是有意停用的，见 §1.1，除非用户明确要求
 - 不要在没有读 `docs/icons/README.md` 的情况下按文件名判断某个 png/ico 是给哪个位置用的（**这个仓库已经因此出过两次事故**）
 - 不要在本地生成带 CRLF 的补丁 / tsv 再推上去
