@@ -45,28 +45,39 @@ BLOCK_FILE = os.path.join(HERE, "cjk-block.rs.txt")
 # 插入用的代码片段
 # --------------------------------------------------------------------------
 
-# 改动 2：first_undrawable 里，CJK 检查必须放在「泰文块之后、阿拉伯之前」。
-#         紧贴上一行插入，不要多余空行。
+# 改动 2：first_undrawable 里，CJK 检查必须放在「泰文块之后、阿拉伯/希伯来之前」。
+#         锚点用泰文块的收尾（`return first_undrawable(&rest);` + 它的花括号），
+#         而不是阿拉伯那句注释 —— 上游每加一种文字就会改那句注释
+#         （v0.9.0 就从 "Arabic that…" 改成了 "Arabic or Hebrew that…"）。
 CJK_UNDRAWABLE_CHECK = r"""// This build draws CJK (Chinese/Japanese/Korean) text with the Japanese fallback Type 3 font
 // (`draw_cjk`), which upstream doesn't, so those characters are drawable here and must not be
-// refused (#125). Judge it the way `draw_cjk` splits a line: what it hands to WinAnsi can still
-// fail, which is exactly a character that is neither CJK nor WinAnsi-encodable.
+// refused. Judge it the way `draw_cjk` splits a line: what it hands to WinAnsi can still fail,
+// which is exactly a character that is neither CJK nor WinAnsi-encodable.
 if needs_cjk(&t.text) {
     return t.text.chars().find(|c| !is_cjk(*c) && pdfcraft_fonts::win_ansi_byte(*c).is_none());
 }
 """
 
-# 改动 3：is_cjk —— 必须排除泰文（上游已能用日文字体画泰文，误判会导致缺字形报错）
-#         与上一函数之间保留一个空行（由调用处补 "\n"）。
-CJK_IS_CJK = r"""/// A character WinAnsi can't encode and neither Arabic nor Thai covers: Chinese, Japanese, Korean and
-/// other non-Latin scripts drawn through the Japanese fallback Type 3 font. Most Simplified Chinese
-/// characters share codepoints with Japanese kanji, so Shippori Mincho covers them.
+# 改动 3：is_cjk —— 必须排除上游**自己能画**的文字。
+#         排除列表由 upstream_script_guards() 从目标文件自动探测后填进 {GUARDS}。
+CJK_IS_CJK = r"""/// A character WinAnsi can't encode and that none of the scripts upstream shapes (Arabic, Thai,
+/// Hebrew, …) covers: Chinese, Japanese, Korean and other non-Latin scripts drawn through the
+/// Japanese fallback Type 3 font. Most Simplified Chinese characters share codepoints with
+/// Japanese kanji, so Shippori Mincho covers them.
+///
+/// Every script excluded here is one upstream can already draw with its own craft-fonts face.
+/// Leaving one in would route it through the Japanese font instead, which has no glyph for it
+/// (e.g. Thai and Hebrew already caused that). `upstream_script_guards()` regenerates this list
+/// from the target file, so a new upstream script cannot silently break it.
 fn is_cjk(c: char) -> bool {
-    !is_bidi_control(c) && !is_arabic(c) && !is_thai(c) && pdfcraft_fonts::win_ansi_byte(c).is_none()
+    !is_bidi_control(c) && {GUARDS} && pdfcraft_fonts::win_ansi_byte(c).is_none()
 }
 """
 
-# 改动 5：draw 里的 CJK 分发（紧跟在 shaped 分支之后，不留空行）
+# 改动 5：draw 里的 CJK 分发，紧跟在 shaped 分支之后。
+#         锚点用 `draw_shaped(...)` 调用本身，而不是 `any(is_thai) ||` 那个条件 ——
+#         上游 v0.9.0 把条件重构成了多行 + `face_or_new(...)` 辅助闭包
+#         （泰文那条判断在文件里出现了多次，靠它定位已经不可靠）。
 CJK_DRAW_DISPATCH = r"""// CJK (Chinese/Japanese/Korean) text: drawn with a Type 3 fallback font whose glyphs
 // are the Japanese document face, so characters no longer turn into `?`.
 if needs_cjk(&t.text) {
@@ -110,6 +121,25 @@ def detect_series(src):
     return "new" if has_italic else "old"
 
 
+def upstream_script_guards(src):
+    """探测上游**自己能画**的文字脚本，生成 is_cjk 要排除的清单。
+
+    上游每支持一种新文字，就会多出一个 `fn is_xxx(c: char) -> bool`（Arabic / Thai / Hebrew …）。
+    这些字符**绝不能**被判成 CJK —— 否则会被送进日文字体，而日文字体没有对应字形，
+    构建日志会报 `Japanese fallback font has no glyph for U+XXXX`。
+    希伯来语在 v0.9.0 加入时就正好复现了泰文当初那个坑。
+
+    自动探测而不是手写清单，是为了上游下次加新文字时不用改这里。
+    """
+    names = set(re.findall(r"^fn (is_\w+)\(c: char\) -> bool", src, re.M))
+    names.discard("is_cjk")            # 我们自己加的
+    names.discard("is_bidi_control")   # 方向标记，单独处理（不绘制但不归 CJK）
+    ordered = sorted(names)
+    print(f"   上游可自行绘制的文字脚本：{', '.join(ordered) or '（无）'}")
+    print(f"   is_cjk 将排除：{', '.join(ordered) or '（无）'}")
+    return " && ".join(f"!{n}(c)" for n in ordered)
+
+
 def load_block(series):
     with open(BLOCK_FILE, encoding="utf-8", newline="") as f:
         block = f.read()
@@ -128,6 +158,7 @@ def load_block(series):
 
 def apply_modifications(before, series):
     block = load_block(series)
+    guards = upstream_script_guards(before)
     src = before
 
     # 1) 独立 use 语句（不改动上游原有 import 行，这样跨版本都成立）
@@ -138,20 +169,24 @@ def apply_modifications(before, series):
         "use unicode_bidi::{Level, ParagraphBidiInfo};",
         "1 import")
 
-    # 2) first_undrawable 的 CJK 检查
-    src = replace_once(
-        src,
-        "    // Arabic that nothing can draw: there's no face, or the face lacks it.\n",
-        dedent_lines(CJK_UNDRAWABLE_CHECK, "    ") +
-        "    // Arabic that nothing can draw: there's no face, or the face lacks it.\n",
-        "2 first_undrawable 的 CJK 检查")
+    # 2) first_undrawable 的 CJK 检查，插在泰文块之后、阿拉伯/希伯来之前。
+    #    锚点 = 泰文块的收尾两行（语义稳定：无论上游之后加几种文字都在这个位置）
+    tail = "        return first_undrawable(&rest);\n    }\n"
+    if src.count(tail) != 1:
+        raise SystemExit(
+            f"❌ 改动「2 first_undrawable 的 CJK 检查」：泰文块收尾锚点命中 {src.count(tail)} 次（应为 1 次）。\n"
+            "   上游可能重排了 first_undrawable（它每次新增文字脚本都会改这个函数），"
+            "需要人工确认 CJK 判断该插在哪个分支之后。")
+    src = replace_once(src, tail, tail + dedent_lines(CJK_UNDRAWABLE_CHECK, "    "),
+                       "2 first_undrawable 的 CJK 检查")
 
-    # 3) is_cjk（排除泰文），与 shaped_arabic 之间空一行
+    # 3) is_cjk，排除列表由上游自己的 is_xxx 自动生成
+    is_cjk_src = CJK_IS_CJK.replace("{GUARDS}", guards)
     src = replace_once(
         src,
         "fn shaped_arabic(c: char) -> bool {\n    is_arabic(c) && !is_bidi_control(c)\n}\n",
         "fn shaped_arabic(c: char) -> bool {\n    is_arabic(c) && !is_bidi_control(c)\n}\n\n" +
-        dedent_lines(CJK_IS_CJK, ""),
+        dedent_lines(is_cjk_src, ""),
         "3 is_cjk")
 
     # 4) CJK 实现块（223 行）
@@ -161,19 +196,35 @@ def apply_modifications(before, series):
         block + "/// Content and resources for an item;",
         "4 CJK 实现块")
 
-    # 5) draw 里的分发：紧跟 shaped 分支之后（上游叫 draw_shaped / 老版本 draw_arabic）。
-    #    判据用 `any(is_thai) ||`：`any(is_thai)` 在 first_undrawable 里也有一处（后面跟 `{`），
-    #    只有 draw 里这个形如 `any(is_thai) || (...)`，能唯一定位。
-    branch = "if t.text.chars().any(is_thai) ||"
-    if src.count(branch) != 1:
+    # 5) draw 里的分发：紧跟 shaped 分支之后。锚点用 draw_shaped(...) 调用本身 ——
+    #    上游 v0.9.0 把分支条件重构成多行 + face_or_new(...) 辅助闭包，
+    #    「泰文那一行」在文件里已不再唯一，靠它定位会插错地方。
+    call = "draw_shaped(doc, t, taken, &mut fonts, &mut out)?;"
+    if src.count(call) != 1:
         raise SystemExit(
-            f"❌ 改动「5 draw 里的 CJK 分发」：`{branch}` 命中 {src.count(branch)} 次（应为 1 次）。\n"
-            "   上游可能重命名/改写了 draw 里的 shaped 分支，需要人工确认插入点。")
-    m = re.search(r"( *)" + re.escape(branch) + r"(?:.|\n)*?\n\1\}\n", src)
-    if not m:
-        raise SystemExit("❌ 改动 5：找到了 `any(is_thai) ||` 但没能匹配到它的分支结尾。")
-    anchor = m.group(0)
-    src = replace_once(src, anchor, anchor + dedent_lines(CJK_DRAW_DISPATCH, m.group(1)), "5 draw 里的 CJK 分发")
+            f"❌ 改动「5 draw 里的 CJK 分发」：`{call}` 命中 {src.count(call)} 次（应为 1 次）。\n"
+            "   上游可能重命名/重构了 draw_shaped 分支，需要人工确认插入点。")
+    #    收尾括号要用「调用行缩进 - 4」去找：draw_shaped 调用体比它所属的 if 深一级。
+    #    若直接按调用行的缩进找 `}`，会匹配到分支内部更深的括号，插到错误的位置
+    #    （这个 bug 曾经真的发生过，被 verify_regen.py 抓出来）。
+    call = "draw_shaped(doc, t, taken, &mut fonts, &mut out)?;"
+    if src.count(call) != 1:
+        raise SystemExit(
+            f"❌ 改动「5 draw 里的 CJK 分发」：`{call}` 命中 {src.count(call)} 次（应为 1 次）。\n"
+            "   上游可能重命名/重构了 draw_shaped 分支，需要人工确认插入点。")
+    pos = src.index(call)
+    line_start = src.rfind("\n", 0, pos) + 1
+    seg = src[line_start:pos]
+    body_indent = len(seg) - len(seg.lstrip())
+    if body_indent < 5:
+        raise SystemExit(f"❌ 改动 5：draw_shaped 调用缩进异常（{body_indent}），请人工确认。")
+    close = "\n" + " " * (body_indent - 4) + "}\n"
+    end = src.find(close, pos)
+    if end == -1:
+        raise SystemExit("❌ 改动 5：找到了 draw_shaped 调用，但找不到它所在 if 分支的收尾 `}`。")
+    anchor = src[pos:end + len(close)]
+    src = replace_once(src, anchor, anchor + dedent_lines(CJK_DRAW_DISPATCH, " " * (body_indent - 4)),
+                       "5 draw 里的 CJK 分发")
 
     # 6) own_fonts 清理 CJK Type 3 字体
     src = replace_once(
@@ -217,9 +268,21 @@ def static_checks(before, after, series, patch_text):
     if imp and imp.group(0) not in after:
         problems.append("上游原有 import 行被改动了 —— 应改用独立 use 语句")
 
-    # 泰文排除必须在
-    if "!is_thai(c)" not in after:
-        problems.append("is_cjk 缺少 !is_thai(c) —— 泰文会被误判成 CJK")
+    # 上游自己能画的每种文字，都必须在 is_cjk 里被排除
+    upstream_scripts = set(re.findall(r"^fn (is_\w+)\(c: char\) -> bool", before, re.M))
+    upstream_scripts -= {"is_cjk", "is_bidi_control"}
+    body = re.search(r"fn is_cjk\(c: char\) -> bool \{\n(.*?)\n\}", after, re.S)
+    if not body:
+        problems.append("修改后找不到 is_cjk 的函数体")
+    else:
+        missing = sorted(n for n in upstream_scripts if f"!{n}(c)" not in body.group(1))
+        if missing:
+            problems.append(
+                f"is_cjk 没排除上游可自行绘制的文字：{', '.join(missing)} —— "
+                f"这些字符会被送进日文字体，导致缺字形（`Japanese fallback font has no glyph for U+XXXX`）")
+        else:
+            print(f"   is_cjk 已排除上游全部 {len(upstream_scripts)} 种可绘制文字："
+                  f"{', '.join(sorted(upstream_scripts))}")
 
     if b"\r" in patch_text.encode():
         problems.append("补丁含 CR，必须是纯 LF")
