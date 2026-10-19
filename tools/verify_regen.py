@@ -26,6 +26,55 @@ regen = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(regen)
 
 
+def strip_rust_comments(src):
+    """去掉 Rust 注释，只留代码 —— 用来区分「行为变了」和「只是改了注释措辞」。
+
+    处理 // 行注释（跳过字符串字面量里的 //，例如 "https://"）和 /* */ 块注释。
+    """
+    out = []
+    in_block = False
+    for line in src.splitlines():
+        res, i, n, quote = [], 0, len(line), None
+        while i < n:
+            if in_block:
+                if line.startswith("*/", i):
+                    in_block = False
+                    i += 2
+                else:
+                    i += 1
+                continue
+            ch = line[i]
+            if quote:
+                res.append(ch)
+                if ch == "\\":
+                    if i + 1 < n:
+                        res.append(line[i + 1])
+                        i += 1
+                elif ch == quote:
+                    quote = None
+                i += 1
+                continue
+            if ch in "\"'":
+                quote = ch
+                res.append(ch)
+                i += 1
+                continue
+            if line.startswith("//", i):
+                break
+            if line.startswith("/*", i):
+                in_block = True
+                i += 2
+                continue
+            res.append(ch)
+            i += 1
+        code = "".join(res).rstrip()
+        # 整行都是注释的，整行丢掉（否则「只改注释」会被误判成代码差异）
+        if not code and line.strip():
+            continue
+        out.append(code)
+    return "\n".join(out)
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -53,8 +102,15 @@ def main():
     if truth == mine:
         print("  ✅ 逐字节一致 —— regen-cjk-patch.py 可安全用于重新生成")
         return 0
-    print("  ❌ 不一致，逐行差异：")
-    for i, line in enumerate(difflib.unified_diff(truth.splitlines(), mine.splitlines(),
+
+    # 字节不一致时，再比一次「忽略注释的代码」——
+    # 只改了注释措辞不算回归；代码有任何差异就是真问题。
+    a, b = strip_rust_comments(truth), strip_rust_comments(mine)
+    if a == b:
+        print("  ⚠️  代码完全一致，仅注释措辞不同（不算行为回归）")
+        return 0
+    print("  ❌ 代码不一致，逐行差异：")
+    for i, line in enumerate(difflib.unified_diff(a.splitlines(), b.splitlines(),
                                                   "existing-patch", "regen-script",
                                                   lineterm="", n=2)):
         print("   ", line)
