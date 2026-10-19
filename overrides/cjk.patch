@@ -1,44 +1,50 @@
 diff --git a/crates/edit/src/added.rs b/crates/edit/src/added.rs
-index 9f13047..c33a136 100644
+index d246df7..c9a85b7 100644
 --- a/crates/edit/src/added.rs
 +++ b/crates/edit/src/added.rs
-@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
- 
- use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
- use pdfcraft_fonts::{GlyphError, GlyphOutline, ShapedCluster, ShapedScript, Std14, literal, shape_arabic, shape_thai, shaped_glyph, win_ansi};
+@@ -14,6 +14,7 @@
+ use pdfcraft_fonts::{
+     GlyphError, GlyphOutline, ShapedCluster, ShapedScript, Std14, literal, shape_arabic, shape_hebrew, shape_thai, shaped_glyph, win_ansi,
+ };
 +use pdfcraft_fonts::{CraftFont, document_japanese_fonts_for_style, japanese_glyph_from};
  use unicode_bidi::{Level, ParagraphBidiInfo};
  
- use crate::{EditError, MarkKind, check, contents, n, page_list, place_tagged};
-@@ -324,6 +325,13 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
+ use crate::{EditError, MarkKind, check, contents, matrix_number, n, page_list, place_tagged};
+@@ -334,6 +335,13 @@
          let rest = AddedText { text: t.text.chars().filter(|c| !is_thai(*c)).collect(), ..t.clone() };
          return first_undrawable(&rest);
      }
 +    // This build draws CJK (Chinese/Japanese/Korean) text with the Japanese fallback Type 3 font
 +    // (`draw_cjk`), which upstream doesn't, so those characters are drawable here and must not be
-+    // refused (#125). Judge it the way `draw_cjk` splits a line: what it hands to WinAnsi can still
-+    // fail, which is exactly a character that is neither CJK nor WinAnsi-encodable.
++    // refused. Judge it the way `draw_cjk` splits a line: what it hands to WinAnsi can still fail,
++    // which is exactly a character that is neither CJK nor WinAnsi-encodable.
 +    if needs_cjk(&t.text) {
 +        return t.text.chars().find(|c| !is_cjk(*c) && pdfcraft_fonts::win_ansi_byte(*c).is_none());
 +    }
-     // Arabic that nothing can draw: there's no face, or the face lacks it.
-     if let Some(c) = t.text.chars().find(|c| shaped_arabic(*c) && !pdfcraft_fonts::arabic_has(*c)) {
-         return Some(c);
-@@ -348,6 +356,13 @@ fn shaped_arabic(c: char) -> bool {
+     // Arabic or Hebrew that nothing can draw: there's no face, or the face lacks it.
+     if let Some(c) =
+         t.text.chars().find(|c| (shaped_arabic(*c) && !pdfcraft_fonts::arabic_has(*c)) || (is_hebrew(*c) && !pdfcraft_fonts::hebrew_has(*c)))
+@@ -365,6 +373,19 @@
+ /// An Arabic character the face shapes and draws (U+061C, a direction mark, is dropped).
+ fn shaped_arabic(c: char) -> bool {
      is_arabic(c) && !is_bidi_control(c)
- }
- 
-+/// A character WinAnsi can't encode and neither Arabic nor Thai covers: Chinese, Japanese, Korean and
-+/// other non-Latin scripts drawn through the Japanese fallback Type 3 font. Most Simplified Chinese
-+/// characters share codepoints with Japanese kanji, so Shippori Mincho covers them.
-+fn is_cjk(c: char) -> bool {
-+    !is_bidi_control(c) && !is_arabic(c) && !is_thai(c) && pdfcraft_fonts::win_ansi_byte(c).is_none()
 +}
 +
++/// A character WinAnsi can't encode and that none of the scripts upstream shapes (Arabic, Thai,
++/// Hebrew, …) covers: Chinese, Japanese, Korean and other non-Latin scripts drawn through the
++/// Japanese fallback Type 3 font. Most Simplified Chinese characters share codepoints with
++/// Japanese kanji, so Shippori Mincho covers them.
++///
++/// Every script excluded here is one upstream can already draw with its own craft-fonts face.
++/// Leaving one in would route it through the Japanese font instead, which has no glyph for it
++/// (e.g. Thai and Hebrew already caused that). `upstream_script_guards()` regenerates this list
++/// from the target file, so a new upstream script cannot silently break it.
++fn is_cjk(c: char) -> bool {
++    !is_bidi_control(c) && !is_arabic(c) && !is_hebrew(c) && !is_thai(c) && pdfcraft_fonts::win_ansi_byte(c).is_none()
+ }
+ 
  /// Direction marks, embeddings, overrides and isolates: they steer the order and are not drawn.
- fn is_bidi_control(c: char) -> bool {
-     matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-@@ -696,6 +711,229 @@ fn type3_shaped(doc: &mut Document, clusters: &[&ShapedCluster], outlines: &Hash
+@@ -737,6 +758,229 @@
      doc.add(Object::Dict(font))
  }
  
@@ -266,9 +272,9 @@ index 9f13047..c33a136 100644
 +}
 +
  /// Content and resources for an item; `view` maps display space to user space. `taken` holds the
- /// page's font names. `existing`: the item is being replaced, so a build without the Arabic face
- /// keeps drawing its Arabic as `?`, as before Arabic was supported, rather than refusing to move it.
-@@ -721,6 +959,14 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
+ /// page's font names. `existing`: the item is being replaced, so a build without the Arabic or
+ /// Hebrew face keeps drawing that text as `?`, as before it was supported, rather than refusing to
+@@ -776,6 +1020,14 @@
                  out.extend_from_slice(b"Q\n");
                  return Ok((out, res));
              }
@@ -283,7 +289,7 @@ index 9f13047..c33a136 100644
              res.set(b"Font".to_vec(), Object::Dict(fonts));
              let r = text_rect(t);
              let [cr, cg, cb] = t.color.map(|v| v.clamp(0.0, 1.0));
-@@ -1078,7 +1324,7 @@ pub fn delete_content(doc: &mut Document, page: usize, index: usize) -> Result<(
+@@ -1133,7 +1385,7 @@
  fn own_fonts(doc: &Document, obj: ObjRef) -> Vec<Vec<u8>> {
      let Object::Stream(s) = &*doc.get(obj) else { return Vec::new() };
      let Ok(data) = s.decoded() else { return Vec::new() };
