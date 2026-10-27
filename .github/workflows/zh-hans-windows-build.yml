@@ -319,6 +319,24 @@ jobs:
           esac
           echo "✅ 简体中文字体 = $ZH_FONT_FAMILY（唯一 Hans 字体，许可协议已就位，且含 Jpan → 可用于 PDF 文字替换）"
 
+      # 把 HarmonyOS Sans SC 加入上游 crates/fonts/build.rs 的 CJK 全嵌入白名单。
+      # 上游 v0.14.0 新增：非 WHOLE_CJK_FAMILIES 中的 CJK 字体若文件 > 4MB 就不嵌入。
+      # HarmonyOS Sans SC 不在白名单内且文件 > 4MB，会被 build.rs 跳过，导致
+      # 「校验 exe 内确实嵌入了指定的简体中文字体」失败。
+      - name: 把 HarmonyOS Sans SC 加入 CJK 全嵌入白名单
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="src/crates/fonts/src/cjk_scripts.rs"
+          test -f "$target" || { echo "::error::找不到 $target"; exit 1; }
+          if grep -q 'HarmonyOS Sans SC' "$target"; then
+            echo "  HarmonyOS Sans SC 已在 $target 的 WHOLE_CJK_FAMILIES 中，跳过"
+          else
+            sed -i 's/\["Shippori Mincho", "BIZ UDPGothic", "BIZ UDMincho"\]/["Shippori Mincho", "BIZ UDPGothic", "BIZ UDMincho", "HarmonyOS Sans SC"]/' "$target"
+            grep -n 'WHOLE_CJK_FAMILIES' "$target"
+            echo "✅ 已把 HarmonyOS Sans SC 加入 CJK 全嵌入白名单"
+          fi
+
       # 上游 package.ps1 打包便携版时，会把 craft-fonts/fonts/<目录>/OFL.txt **逐个目录**复制成
       # OFL-<目录>.txt —— 判据只是"目录存在"，与 manifest 无关。于是清单里早已不用的字体目录，
       # 也会把它们的许可文件带进便携版（例如思源黑体的 OFL-noto-sans-cjk-sc.txt），造成"分发了一份
