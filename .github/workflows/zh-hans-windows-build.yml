@@ -271,7 +271,7 @@ jobs:
             # 声明 Jpan 与事实相符：鸿蒙实测覆盖日文假名（片假名 90/90、平假名 84/86）。
             # 它在候选表里排在所有日文字体之后，只有日文字体缺该字时才被选用，
             # 因此不影响原有的日文文字与中日共用汉字的渲染结果。
-            printf '%s | Regular | fonts/%s/%s | Hans,Jpan,Latn | Huawei HarmonyOS Sans Fonts License | fonts/%s/OFL.txt | %s | https://developer.huawei.com/consumer/cn/design/resource-V1\n' \
+            printf '%s | Regular | fonts/%s/%s | Hans,Jpan,Latn | OFL-1.1 | fonts/%s/OFL.txt | %s | https://developer.huawei.com/consumer/cn/design/resource-V1\n' \
               "$ZH_FONT_FAMILY" "$ZH_FONT_DIR" "$ZH_FONT_FILE" "$ZH_FONT_DIR" "$sha"
           } > "$tmp"
           mv "$tmp" "$manifest"
