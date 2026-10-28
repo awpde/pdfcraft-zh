@@ -21,8 +21,8 @@
       <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
       <!-- 浏览对话框内部用这个属性传递「要浏览哪个目录」，写法照抄 WiX 官方 WixUI。 -->
       <Property Id="_BrowseProperty" Value="INSTALLFOLDER" />
-      <!-- 关键：让用户选的路径能穿过提权边界，到达真正执行安装的那个进程。 -->
-      <Property Id="INSTALLFOLDER" Secure="yes" />
+      <!-- INSTALLFOLDER 现在由上游 packaging/windows/install-policy.wxi 定义并标记为 Secure="yes"，
+           这里不再重复定义，避免 WiX WIX0091 重复属性错误。 -->
 
       <Dialog Id="InstallWelcome" Width="370" Height="215" Title="[ProductName] Setup">
         <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Install [ProductName]" />
