@@ -252,6 +252,9 @@ jobs:
           # 这个文件名是硬性要求：上游 package.ps1 只会把 fonts/<目录>/OFL.txt
           # 复制成便携版里的 OFL-<目录>.txt，别的名字不会被随包分发。
           cp "$src_dir/OFL.txt" "$dst_dir/OFL.txt"
+          # 简化中文字体清单：上游 v0.14.0 的 build.rs 要求 fonts/simplified-chinese-manifest.txt
+          # 存在且包含至少一款 Han 字体。我们把它和 HarmonyOS Sans SC 一起拷进来。
+          cp "$src_dir/simplified-chinese-manifest.txt" "craft-fonts/fonts/simplified-chinese-manifest.txt"
 
           sha="$(sha256sum "$dst_dir/$ZH_FONT_FILE" | cut -d' ' -f1)"
           tmp="$(mktemp)"
