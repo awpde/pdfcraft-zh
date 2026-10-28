@@ -1,0 +1,6 @@
+# Opt-in native-only Simplified Chinese fonts. Same 8-field format as fonts/manifest.txt:
+#   family | style | file (relative to the repo root) | scripts (ISO 15924, comma-separated) | licence | licence file | sha256 | source
+# Apps read this file separately from fonts/manifest.txt, and native builds only. It is not part
+# of craft-fonts' default FONTS table or embed payload and must never be added to a wasm allowlist.
+# DeckCraft classifies Han characters as Hani, so the row carries Hani,Hans.
+HarmonyOS Sans SC | Regular | fonts/harmonyos-sans-sc/HarmonyOS_Sans_SC_Regular.ttf | Hans,Jpan,Latn | OFL-1.1 | fonts/harmonyos-sans-sc/OFL.txt | 0000000000000000000000000000000000000000000000000000000000000000 | https://developer.huawei.com/consumer/cn/design/resource-V1
