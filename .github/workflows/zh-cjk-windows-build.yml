@@ -388,7 +388,7 @@ jobs:
           if grep -q 'HarmonyOS Sans SC' "$target"; then
             echo "  HarmonyOS Sans SC 已在 $target 的 WHOLE_CJK_FAMILIES 中，跳过"
           else
-            sed -i 's/pub const WHOLE_CJK_FAMILIES: \[&str; 3\] = \["Shippori Mincho", "BIZ UDPGothic", "BIZ UDMincho"\]/pub const WHOLE_CJK_FAMILIES: [&str; 4] = ["Shippori Mincho", "BIZ UDPGothic", "BIZ UDMincho", "HarmonyOS Sans SC"]/' "$target"
+            sed -i '6s/.*/pub const WHOLE_CJK_FAMILIES: [\&str; 4] = ["Shippori Mincho", "BIZ UDPGothic", "BIZ UDMincho", "HarmonyOS Sans SC"];/' "$target"
             grep -n 'WHOLE_CJK_FAMILIES' "$target"
             echo "✅ 已把 HarmonyOS Sans SC 加入 CJK 全嵌入白名单"
           fi
