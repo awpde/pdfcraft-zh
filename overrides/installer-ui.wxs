@@ -2,13 +2,21 @@
 <!-- Original, text-only native MSI dialogs. No third-party UI artwork or custom-action DLLs.
      Full UI gets welcome (with the desktop-shortcut and PDF context-menu checkboxes)/progress/outcome screens; /qn and /qb stay unattended.
 
-     简体中文版附加改动（相对上游 packaging/windows/installer-ui.wxs，基于上游最新版合并）：
+     简体中文版附加改动（相对上游 packaging/windows/installer-ui.wxs，基于上游 v0.15.0 合并）：
        1. 新增「选择安装位置」能力：欢迎页多一个可编辑的安装路径 + “Browse...” 按钮，
           按钮打开一个新的目录浏览对话框（InstallLocationBrowser）。
-       2. 为此声明 WIXUI_INSTALLDIR 并把 INSTALLFOLDER 标记为 secure —— 否则用户在
-          未提权的界面上选的路径，在提权执行安装时会被 Windows Installer 丢掉。
-       3. 上游后续新增的控件（如 PdfContextMenu 右键菜单复选框）原样保留，仅下移避让；
-          上游的 packaging/windows/test-msi.ps1 会逐项核对界面元素，缺控件会让构建自检失败。 -->
+       2. 为此声明 WIXUI_INSTALLDIR（值是目录 ID「INSTALLFOLDER」，Indirect 控件靠它定位目录）。
+       3. INSTALLFOLDER 由上游 packaging/windows/install-policy.wxi 定义并标记为 Secure="yes"，
+          这里不再重复定义，避免 WiX WIX0091 重复属性错误；上游按作用域设默认目录的
+          SetProperty 条件都是「NOT INSTALLFOLDER」，所以用户在界面选的路径不会被覆盖。
+       4. 上游 v0.15.0 引入「双作用域安装器」（每用户 / 全机器）：Description/DescriptionUser、
+          Install/InstallUser、Repair/RepairUser、Remove/RemoveUser，靠 ALLUSERS 条件切换。
+          这些控件**必须原样保留**：
+            · 上游 packaging/windows/check-install-policy.ps1 要求每个提权按钮有且仅有一个
+              <Id>User 对应项，且它不能提权、可见性要跟随作用域；
+            · 提权按钮与 User 按钮的 ControlEvent 必须逐行一致（做同样的事），
+              所以我们的 SetTargetPath 两条都要加，且顺序相同。
+          少一个对应项，上游的安装策略自检就会中止构建。 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>
     <UI Id="PdfcraftInstallerUI">
@@ -21,13 +29,17 @@
       <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
       <!-- 浏览对话框内部用这个属性传递「要浏览哪个目录」，写法照抄 WiX 官方 WixUI。 -->
       <Property Id="_BrowseProperty" Value="INSTALLFOLDER" />
-      <!-- INSTALLFOLDER 现在由上游 packaging/windows/install-policy.wxi 定义并标记为 Secure="yes"，
+      <!-- INSTALLFOLDER 由上游 packaging/windows/install-policy.wxi 定义并标记为 Secure="yes"，
            这里不再重复定义，避免 WiX WIX0091 重复属性错误。 -->
 
       <Dialog Id="InstallWelcome" Width="370" Height="215" Title="[ProductName] Setup">
         <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Install [ProductName]" />
         <Control Id="Description" Type="Text" X="20" Y="55" Width="330" Height="40"
-            Text="Setup will install [ProductName] for all users and add it to the Start menu. Click Install to continue." />
+            Text="Setup will install [ProductName] for all users and add it to the Start menu. Click Install to continue."
+            HideCondition="ALLUSERS &lt;&gt; 1" ShowCondition="ALLUSERS = 1" />
+        <Control Id="DescriptionUser" Type="Text" X="20" Y="55" Width="330" Height="40"
+            Text="Setup will install [ProductName] only for your account and add it to the Start menu. Click Install to continue."
+            HideCondition="ALLUSERS = 1" ShowCondition="ALLUSERS &lt;&gt; 1" />
 
         <!-- 安装位置：可直接编辑，也可按 Browse 选目录 -->
         <Control Id="LocationLabel" Type="Text" X="20" Y="98" Width="330" Height="12" TabSkip="no"
@@ -43,7 +55,13 @@
             Property="INSTALLDESKTOPSHORTCUT" CheckBoxValue="1" Text="Create a &amp;desktop shortcut" />
         <Control Id="PdfContextMenu" Type="CheckBox" X="20" Y="156" Width="330" Height="17"
             Property="INSTALLPDFCONTEXTMENU" CheckBoxValue="1" Text="Add &quot;&amp;Edit with PdfCraft&quot; to the right-click menu of PDF files" />
-        <Control Id="Install" Type="PushButton" X="195" Y="185" Width="75" Height="23" Default="yes" ElevationShield="yes" Text="&amp;Install">
+
+        <!-- 提权按钮（ALLUSERS=1）与它的 User 对应项：事件必须逐行一致 -->
+        <Control Id="Install" Type="PushButton" X="195" Y="185" Width="75" Height="23" Default="yes" DefaultCondition="ALLUSERS = 1" ElevationShield="yes" HideCondition="ALLUSERS &lt;&gt; 1" ShowCondition="ALLUSERS = 1" Text="&amp;Install">
+          <Publish Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="InstallUser" Type="PushButton" DefaultCondition="ALLUSERS &lt;&gt; 1" HideCondition="ALLUSERS = 1" ShowCondition="ALLUSERS &lt;&gt; 1" X="195" Y="185" Width="75" Height="23" Text="&amp;Install">
           <Publish Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
           <Publish Event="EndDialog" Value="Return" Order="2" />
         </Control>
@@ -84,12 +102,21 @@
         <Control Id="Title" Type="Text" X="20" Y="20" Width="330" Height="25" Text="{\InstallerTitle}Maintain [ProductName]" />
         <Control Id="Description" Type="Text" X="20" Y="55" Width="330" Height="70"
             Text="[ProductName] is already installed. Choose Repair to restore missing files and shortcuts, or Remove to uninstall it." />
-        <Control Id="Repair" Type="PushButton" X="110" Y="145" Width="75" Height="23" Default="yes" ElevationShield="yes" Text="&amp;Repair">
+        <Control Id="Repair" Type="PushButton" X="110" Y="145" Width="75" Height="23" Default="yes" DefaultCondition="ALLUSERS = 1" ElevationShield="yes" HideCondition="ALLUSERS &lt;&gt; 1" ShowCondition="ALLUSERS = 1" Text="&amp;Repair">
           <Publish Property="REINSTALL" Value="ALL" Order="1" />
           <Publish Property="REINSTALLMODE" Value="amus" Order="2" />
           <Publish Event="EndDialog" Value="Return" Order="3" />
         </Control>
-        <Control Id="Remove" Type="PushButton" X="195" Y="145" Width="75" Height="23" ElevationShield="yes" Text="R&amp;emove">
+        <Control Id="RepairUser" Type="PushButton" DefaultCondition="ALLUSERS &lt;&gt; 1" HideCondition="ALLUSERS = 1" ShowCondition="ALLUSERS &lt;&gt; 1" X="110" Y="145" Width="75" Height="23" Text="&amp;Repair">
+          <Publish Property="REINSTALL" Value="ALL" Order="1" />
+          <Publish Property="REINSTALLMODE" Value="amus" Order="2" />
+          <Publish Event="EndDialog" Value="Return" Order="3" />
+        </Control>
+        <Control Id="Remove" Type="PushButton" X="195" Y="145" Width="75" Height="23" ElevationShield="yes" HideCondition="ALLUSERS &lt;&gt; 1" ShowCondition="ALLUSERS = 1" Text="R&amp;emove">
+          <Publish Property="REMOVE" Value="ALL" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="RemoveUser" Type="PushButton" HideCondition="ALLUSERS = 1" ShowCondition="ALLUSERS &lt;&gt; 1" X="195" Y="145" Width="75" Height="23" Text="R&amp;emove">
           <Publish Property="REMOVE" Value="ALL" Order="1" />
           <Publish Event="EndDialog" Value="Return" Order="2" />
         </Control>
