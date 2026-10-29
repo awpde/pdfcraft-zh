@@ -382,7 +382,7 @@ jobs:
       - name: 应用「自选安装位置」界面
         shell: bash
         env:
-          UPSTREAM_UI_SHA256: a437c2a8c7e663ee49772e9b92dabe8f976f6bfb
+          UPSTREAM_UI_SHA256: 7bea8562f822b46b16e90ae02934b18cc9b3283d
         run: |
           set -euo pipefail
           ui="src/packaging/windows/installer-ui.wxs"
