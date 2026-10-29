@@ -47,6 +47,38 @@
 
 ---
 
+## 1.0 ★ 2026-10-29 起：zh-cjk 已无必要（上游自己实现了中文回退）
+
+**结论：可以退役 `zh-cjk` 版了。** 现在只需要 `zh-hans`。
+
+**依据（读上游 v0.15.0 源码确认，不是推测）**：
+
+- 上游把 `crates/edit/src/added.rs` 拆成了模块，新增 `crates/edit/src/text/fallback.rs`，
+  其中已经实现了完整的中文回退：
+  | 上游 v0.15.0 | 我们的 cjk.patch |
+  |---|---|
+  | `needs_japanese()` 覆盖 **U+4E00..=0x9FFF（中文统一表意文字）** | `is_cjk()` |
+  | `type3_glyph` → `japanese_glyph_from` | `cjk_path` → `japanese_glyph_from` |
+  | `fallback_face()` | `cjk_face()` |
+  | `no_japanese_font()` —— 错误文案**一字不差** | `cjk_no_font()` |
+  | 原生路径也有 `ToUnicode`（复制/搜索中文可用） | 我们的补丁也提供 |
+- 我们的构建把鸿蒙字体以 **`Hans,Jpan,Latn`** 写进字体清单，而上游写「替换文字」时正是
+  按 `covers("Jpan")` 筛候选字体 → 我们的字体在候选集里 → 上游原生机制就能画中文。
+- v0.15.0 构建日志里有明确证据：`✅ 含 Jpan → 可用于 PDF 文字替换（简体字不再报 no glyph）`。
+
+**所以**：以前必须靠补丁的「新增中文文字」，现在 `zh-hans` 也能用了；
+而 `zh-cjk` 是仓库里唯一需要人工维护的环节（补丁只对准一个上游版本，1.8 天一版）——
+它的问题已经自动消失，退役它反而是「减维护」。
+
+**退役前请用户实测一次**：装 `zh-hans` 的最新包 → 用「新增文字」加一句中文 →
+确认能显示、能复制。确认后再删 `zh-cjk-windows-build.yml` 与 `overrides/cjk.patch`。
+
+**若将来仍要保留 zh-cjk**（例如用户就是想留着那条线），注意：
+`tools/regen-cjk-patch.py` **不兼容 v0.15.0**（上游把文件拆了，它会报「找不到 pub fn width(」），
+需要按新结构重写该工具。
+
+---
+
 ## 1.1 ★ zh-cjk 的定时构建已停用（2026-10-19），恢复方法在这
 
 **现状：`zh-cjk` 只有手动触发，每天自动跟版的是 `zh-hans`。**
