@@ -1,49 +1,61 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""把一款中文字体加进上游的 CJK 「全嵌入白名单」。
+"""Add a Simplified Chinese font to the upstream CJK "embedded whole" whitelist.
 
-上游 crates/fonts/src/cjk_scripts.rs 里：
+Upstream crates/fonts/src/cjk_scripts.rs:
 
     pub const WHOLE_CJK_FAMILIES: [&str; 3] = ["Shippori Mincho", "BIZ UDPGothic", "BIZ UDMincho"];
-    pub const MAX_OTHER_CJK_BYTES: u64 = 4 << 20;   // 其余 CJK 字体超过 4 MiB 就跳过
+    pub const MAX_OTHER_CJK_BYTES: u64 = 4 << 20;   # other CJK faces over 4 MiB are skipped
 
-`crates/fonts/build.rs` 用 `#[path]` include 同一个文件，所以白名单里的字体**整份嵌入**，
-不受 4 MiB 上限限制；名单外的 CJK 字体超限会被 `Skip` —— **静默丢弃，连警告都没有**。
+crates/fonts/build.rs includes the same file with #[path], so a family in that list is embedded
+whole (no size cap); any other CJK face over the cap is *silently* skipped -- no warning at all.
 
-我们的中文字体（鸿蒙 Sans SC，8.3 MB）超过 4 MiB，必须进这个名单，否则它根本不在二进制里，
-写进 PDF 的中文只能靠日文字体，简体独有字（如「还」U+8FD8）就没有字形。
+Our Simplified Chinese face (HarmonyOS Sans SC, 8.3 MB) is over the 4 MiB cap, so it MUST be in
+the list. Otherwise it is not in the binary, the only faces left for PDF text are the Japanese
+ones, and Simplified-only characters (e.g. U+8FD8) have no glyph.
 
-按内容匹配替换（不依赖行号，上游改了这个文件也不会错位），替换后由调用方校验结果。
+The line is replaced by content match (not by line number), so an upstream edit of that file
+cannot silently misplace it. The caller verifies the result afterwards.
 
-用法：python add-font-whitelist.py <cjk_scripts.rs 路径> <字体 family>
+NOTE: the Windows runner's Python prints with cp1252, so every message here is ASCII -- a
+non-ASCII character in a print() raises UnicodeEncodeError and aborts the build.
+
+Usage: python add-font-whitelist.py <cjk_scripts.rs> <font family>
 """
 import re
 import sys
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+QUOTE = chr(34)
+
 
 def main() -> int:
     if len(sys.argv) != 3:
-        print("用法: add-font-whitelist.py <cjk_scripts.rs> <family>")
+        print("usage: add-font-whitelist.py <cjk_scripts.rs> <family>")
         return 2
     path, family = sys.argv[1], sys.argv[2]
-    src = open(path, encoding='utf-8').read()
-    m = re.search(r'pub const WHOLE_CJK_FAMILIES: \[&str; (\d+)\] = \[([^\]]*)\];', src)
+    src = open(path, encoding="utf-8").read()
+    m = re.search(r"pub const WHOLE_CJK_FAMILIES: \[&str; (\d+)\] = \[([^\]]*)\];", src)
     if not m:
-        print(f"::error::上游的 WHOLE_CJK_FAMILIES 声明变了（{path}），无法自动加入白名单。")
-        print("::error::请手动把字体 family 加进那个数组，并确认数组长度。")
+        print("::error::upstream WHOLE_CJK_FAMILIES declaration changed; "
+              "cannot add the font automatically")
+        print("::error::add the font family to that array by hand and fix the array length")
         return 1
-    fams = [x.strip().strip('"') for x in m.group(2).split(',') if x.strip()]
+    fams = [x.strip().strip(QUOTE) for x in m.group(2).split(",") if x.strip()]
     if family in fams:
-        print(f"  {family} 已在白名单里，跳过")
+        print("  " + family + " is already whitelisted, skipped")
         return 0
     fams.append(family)
-    new = 'pub const WHOLE_CJK_FAMILIES: [&str; %d] = [%s];' % (
-        len(fams), ', '.join('"%s"' % f for f in fams))
+    new = ("pub const WHOLE_CJK_FAMILIES: [&str; %d] = [%s];"
+           % (len(fams), ", ".join(QUOTE + f + QUOTE for f in fams)))
     src = src[:m.start()] + new + src[m.end():]
-    open(path, 'w', encoding='utf-8', newline='\n').write(src)
-    print(f"  已改为: {new}")
+    open(path, "w", encoding="utf-8", newline="\n").write(src)
+    print("  rewritten: " + new)
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())
