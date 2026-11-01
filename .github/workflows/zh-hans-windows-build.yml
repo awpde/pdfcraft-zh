@@ -229,6 +229,34 @@ jobs:
           ref: ${{ env.CRAFT_FONTS_REF }}
           path: craft-fonts
 
+      # 应用「新增中文文字」修复补丁（合并自原 zh-cjk 流水线）。
+      # 补丁两处改动：
+      #   1) crates/edit/src/added/layout.rs 的 first_undrawable 补上 CJK 分支 —— 上游 v0.15.0
+      #      起了实现 CJK 回退却漏改这个判定函数，导致「新增文字」对任何中文都飘红并阻止提交；
+      #   2) apps/pdfcraft/src/main.rs 关掉启动时的自动更新检查（启动联网查新版本）。
+      - name: 应用「新增中文文字」修复补丁
+        shell: bash
+        run: |
+          set -uo pipefail
+          patch_file="$GITHUB_WORKSPACE/builder/overrides/cjk.patch"
+          test -f "$patch_file" || { echo "::error::本仓库缺少 $patch_file"; exit 1; }
+
+          if git -C src apply --check --ignore-whitespace "$patch_file"; then
+            git -C src apply --ignore-whitespace "$patch_file"
+            echo "✅ 已应用 CJK 修复补丁（新增中文文字不再被误判为画不出来）"
+            grep -q "fn is_cjk" src/crates/edit/src/added/layout.rs \
+              && echo "   已确认 layout.rs 含 is_cjk（中文判定已修）" \
+              || { echo "::error::补丁应用后未找到 is_cjk"; exit 1; }
+            grep -q "set_startup_update_check(false)" src/apps/pdfcraft/src/main.rs \
+              && echo "   已确认启动时不再联网检查更新" \
+              || { echo "::error::补丁应用后启动更新检查仍是开启的"; exit 1; }
+          else
+            echo "::error::补丁无法干净应用到上游源码（上游可能改动过相关文件）。"
+            echo "::error::补丁没生效就没有发布意义 —— 已中止构建，不产出任何 release。"
+            echo "::error::修复方法：拿上游最新源码重新生成 overrides/cjk.patch，详见 docs/维护指南.md。"
+            exit 1
+          fi
+
       # 把简体中文界面字体换成本仓库自带的字体（默认鸿蒙 HarmonyOS Sans SC）。
       # 做法：把字体拷进 craft-fonts 的 fonts/<目录>/，并改写 fonts/manifest.txt ——
       # 删掉原有的 Hans（简中）行，再追加我们的一行。build.rs 只读 manifest 的前 4 列
@@ -326,19 +354,27 @@ jobs:
       # 上游 v0.14.0 新增：非 WHOLE_CJK_FAMILIES 中的 CJK 字体若文件 > 4MB 就不嵌入。
       # HarmonyOS Sans SC 不在白名单内且文件 > 4MB，会被 build.rs 跳过，导致
       # 「校验 exe 内确实嵌入了指定的简体中文字体」失败。
-      - name: 把 HarmonyOS Sans SC 加入 CJK 全嵌入白名单
+      # 把中文字体加入上游的 CJK「全嵌入白名单」。
+      # 上游 crates/fonts/src/cjk_scripts.rs 里 WHOLE_CJK_FAMILIES 的字体整份嵌入（不受 4 MiB
+      # 体积上限限制），名单外的 CJK 字体超限会被 build.rs **静默跳过**（Skip，连警告都没有）——
+      # 我们的中文字体 8.3 MB，超限，所以必须进这个名单，否则它根本不在二进制里，
+      # 写进 PDF 的中文只能靠日文字体，简体独有字（如「还」U+8FD8）就没有字形。
+      # 用仓库里的脚本按内容匹配替换（不依赖行号，上游改了这个文件也不会错位），并校验结果。
+      - name: 把中文字体加入 CJK 全嵌入白名单
         shell: bash
         run: |
           set -euo pipefail
           target="src/crates/fonts/src/cjk_scripts.rs"
+          script="builder/overrides/add-font-whitelist.py"
           test -f "$target" || { echo "::error::找不到 $target"; exit 1; }
-          if grep -q 'HarmonyOS Sans SC' "$target"; then
-            echo "  HarmonyOS Sans SC 已在 $target 的 WHOLE_CJK_FAMILIES 中，跳过"
-          else
-            sed -i '6s/.*/pub const WHOLE_CJK_FAMILIES: [\&str; 4] = ["Shippori Mincho", "BIZ UDPGothic", "BIZ UDMincho", "HarmonyOS Sans SC"];/' "$target"
-            grep -n 'WHOLE_CJK_FAMILIES' "$target"
-            echo "✅ 已把 HarmonyOS Sans SC 加入 CJK 全嵌入白名单"
-          fi
+          test -f "$script" || { echo "::error::找不到 $script"; exit 1; }
+          python "$script" "$target" "$ZH_FONT_FAMILY"
+          # 校验：字体必须真的进了白名单，否则它会被体积上限静默跳过（后面所有校验都会通过，
+          # 但写进 PDF 的中文会缺简体独有字 —— 那种错最难发现，所以这里必须硬失败）。
+          grep -q "\"$ZH_FONT_FAMILY\"" "$target" \
+            || { echo "::error::$ZH_FONT_FAMILY 未进入 CJK 全嵌入白名单，字体会被静默跳过"; exit 1; }
+          grep -n 'WHOLE_CJK_FAMILIES' "$target"
+          echo "✅ 已把 $ZH_FONT_FAMILY 加入 CJK 全嵌入白名单（不受 4 MiB 上限限制）"
 
       # 上游 package.ps1 打包便携版时，会把 craft-fonts/fonts/<目录>/OFL.txt **逐个目录**复制成
       # OFL-<目录>.txt —— 判据只是"目录存在"，与 manifest 无关。于是清单里早已不用的字体目录，
