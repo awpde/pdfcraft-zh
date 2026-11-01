@@ -14,8 +14,85 @@ index 814730f..d96fb88 100644
          app.printer_source = Some(pdfcraft_ui_egui::system_printers());
          app.os_key_store_ids = cfg!(any(target_os = "macos", target_os = "windows"));
          #[cfg(target_os = "macos")]
+diff --git a/crates/edit/src/added/draw.rs b/crates/edit/src/added/draw.rs
+index 9404f93..9cdfd79 100644
+--- a/crates/edit/src/added/draw.rs
++++ b/crates/edit/src/added/draw.rs
+@@ -1,5 +1,6 @@
+ use super::layout::{
+-    Piece, arabic_error, hebrew_error, is_arabic, is_hebrew, is_thai, latin_width, norm, shaped_layout, text_rect, thai_error, wrapped,
++    Piece, arabic_error, hebrew_error, is_arabic, is_cjk, is_hebrew, is_thai, latin_width, norm, shaped_layout, text_rect, thai_error,
++    wrapped,
+ };
+ use super::types::{AddedText, Align, Family};
+ use super::{
+@@ -256,6 +257,48 @@ fn type3_shaped(doc: &mut Document, clusters: &[&ShapedCluster], outlines: &Hash
+ /// page's font names. `existing`: the item is being replaced, so a build without the Arabic or
+ /// Hebrew face keeps drawing that text as `?`, as before it was supported, rather than refusing to
+ /// move it.
++/// Draw a text item that has CJK characters in it with a Type 3 fallback font -- the same
++/// mechanism the "replace text" path uses (`text::fallback`): the glyphs come from the
++/// craft-fonts document faces (the Japanese ones and any Simplified Chinese face among them), so
++/// Chinese is shown instead of the '?' the standard fonts would write, and the generated font
++/// carries a ToUnicode map, so the text can still be copied and searched.
++///
++/// The item's own standard font cannot show these characters at all, so the whole item is drawn
++/// with the fallback face (its Latin glyphs come from the same face).
++fn draw_cjk(doc: &mut Document, t: &AddedText, fonts: &mut Dict, out: &mut Vec<u8>) -> Result<(), EditError> {
++    use crate::text::fallback::{MAX_TYPE3_GLYPHS, type3_encode, type3_font};
++    let fallback = type3_font(doc, fonts, &t.text, t.family, t.bold, MAX_TYPE3_GLYPHS)?;
++    let r = text_rect(t);
++    let [cr, cg, cb] = t.color.map(|v| v.clamp(0.0, 1.0));
++    out.extend(format!("BT {} {} {} rg\n", n(cr), n(cg), n(cb)).bytes());
++    if t.char_spacing != 0.0 {
++        out.extend(format!("{} Tc\n", n(t.char_spacing)).bytes());
++    }
++    let all = wrapped(t);
++    let paragraphs: Vec<usize> = all.iter().map(|(_, _, p)| *p).collect();
++    for (i, (line, ..)) in all.iter().enumerate() {
++        let runs = type3_encode(&fallback, line)
++            .ok_or_else(|| EditError::Invalid(format!("the text can't be shown by the {} fallback", fallback.family)))?;
++        // The line's width: the advances of the characters the fallback shows.
++        let w: f64 = line
++            .chars()
++            .filter_map(|ch| fallback.widths.iter().find(|(c, _)| *c == ch).map(|(_, adv)| *adv))
++            .sum::<f64>()
++            * t.size;
++        // Baseline: 0.8 em below the line top, as in the standard-font path.
++        let y = r[3] - (i as f64 * 1.2 + 0.95) * t.size;
++        let (x, tw) = placed(t, r, &paragraphs, i, w, line.matches(' ').count(), false);
++        out.extend(format!("1 0 0 1 {} {} Tm {} Tw ", n(x), n(y), n(tw)).bytes());
++        for (name, bytes) in runs {
++            out.extend(format!("/{name} {} Tf ", n(t.size)).bytes());
++            out.extend(literal(&bytes));
++            out.extend_from_slice(b" Tj\n");
++        }
++    }
++    out.extend_from_slice(b"ET\n");
++    Ok(())
++}
++
+ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing: bool) -> Result<(Vec<u8>, Dict), EditError> {
+     let mut res = Dict::new();
+     let mut out = format!(
+@@ -291,6 +334,15 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
+                 out.extend_from_slice(b"Q\n");
+                 return Ok((out, res));
+             }
++            // CJK (Chinese/Japanese/Korean) text: drawn with a Type 3 fallback font, the same
++            // mechanism the "replace text" path uses. Without this the standard font would write
++            // '?' for every one of these characters (#125).
++            if t.text.chars().any(is_cjk) {
++                draw_cjk(doc, t, &mut fonts, &mut out)?;
++                res.set(b"Font".to_vec(), Object::Dict(fonts));
++                out.extend_from_slice(b"Q\n");
++                return Ok((out, res));
++            }
+             res.set(b"Font".to_vec(), Object::Dict(fonts));
+             let r = text_rect(t);
+             let [cr, cg, cb] = t.color.map(|v| v.clamp(0.0, 1.0));
 diff --git a/crates/edit/src/added/layout.rs b/crates/edit/src/added/layout.rs
-index 31a4dc4..4c17ee2 100644
+index 31a4dc4..db59436 100644
 --- a/crates/edit/src/added/layout.rs
 +++ b/crates/edit/src/added/layout.rs
 @@ -118,6 +118,21 @@ pub(super) fn is_hebrew(c: char) -> bool {
@@ -25,7 +102,7 @@ index 31a4dc4..4c17ee2 100644
 +/// The characters the craft-fonts fallback faces draw: kana, CJK ideographs and their compatibility
 +/// and full-width forms. The Japanese document faces cover them, and so does a Simplified Chinese
 +/// face that declares `Jpan`, so text in them is drawn and must not be refused.
-+fn is_cjk(c: char) -> bool {
++pub(super) fn is_cjk(c: char) -> bool {
 +    matches!(u32::from(c), 0x3000..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
 +}
 +
@@ -54,3 +131,47 @@ index 31a4dc4..4c17ee2 100644
      if !shaped_by_a_face(t) {
          // Drawn line by line in the item's standard font (`\n` splits lines). Without the face
          // that is also how `draw` redraws an existing item, so it's checked that way.
+diff --git a/crates/edit/src/text.rs b/crates/edit/src/text.rs
+index 98824c7..6338420 100644
+--- a/crates/edit/src/text.rs
++++ b/crates/edit/src/text.rs
+@@ -29,7 +29,7 @@ pub use session::TextSession;
+ 
+ mod blocks;
+ mod editor;
+-mod fallback;
++pub(crate) mod fallback;
+ mod interp;
+ mod lines;
+ mod rewrite;
+diff --git a/crates/edit/src/text/fallback.rs b/crates/edit/src/text/fallback.rs
+index b8f45a2..4682e63 100644
+--- a/crates/edit/src/text/fallback.rs
++++ b/crates/edit/src/text/fallback.rs
+@@ -194,7 +194,7 @@ pub(crate) struct Type3Fallback {
+     /// face, `PCHe` for Hebrew text).
+     pub(crate) names: Vec<String>,
+     /// Every unique character with its advance (em), in order of first appearance.
+-    pub(super) widths: Vec<(char, f64)>,
++    pub(crate) widths: Vec<(char, f64)>,
+     /// Where each character is shown: the index of its font in `names`, and its code there.
+     pub(crate) codes: HashMap<char, (usize, u8)>,
+ }
+@@ -354,7 +354,7 @@ pub(crate) fn type3_faces(text: &str, family: crate::added::Family, bold: bool)
+     Ok((std::iter::once(hebrew).chain(japanese).chain(latin).collect(), true))
+ }
+ 
+-pub(super) fn type3_font(
++pub(crate) fn type3_font(
+     doc: &mut Document,
+     fonts_res: &mut Dict,
+     text: &str,
+@@ -495,7 +495,7 @@ pub(super) fn add_type3_font(doc: &mut Document, fonts_res: &mut Dict, face: &Cr
+ 
+ /// The runs that show `text` in the fallback: consecutive characters in one font form one run, so
+ /// a font is switched only where the text moves to another font. `None` if a character has no code.
+-pub(super) fn type3_encode(fallback: &Type3Fallback, text: &str) -> Option<Vec<(String, Vec<u8>)>> {
++pub(crate) fn type3_encode(fallback: &Type3Fallback, text: &str) -> Option<Vec<(String, Vec<u8>)>> {
+     let mut runs: Vec<(usize, Vec<u8>)> = Vec::new();
+     for ch in text.chars() {
+         let (font, code) = *fallback.codes.get(&ch)?;
