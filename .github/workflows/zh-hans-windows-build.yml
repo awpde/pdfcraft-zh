@@ -135,13 +135,12 @@ jobs:
             skip "ref '$ref' 不含简体中文词条，跳过构建"
           fi
 
-          # Release 标签：定时跟版按上游 tag 去重；手动构建带上 commit 短哈希
+          # Release 标签：手动与定时**统一**用同一个标签（不再带 commit 短哈希后缀）。
+          # 以前手动构建带后缀（zh-hans-v0.16.1-24bb853）、定时不带（zh-hans-v0.16.1），
+          # 同一天就出现两个 release：Latest 徽标可能指向内容过时的那份，用户会下载到
+          # 没有中文修复补丁的旧包。统一之后，资产永远是覆盖更新，Latest 始终是最新。
           safe_ref="$(printf '%s' "$ref" | tr '/' '-')"
-          if [ -n "${INPUT_REF:-}" ]; then
-            release_tag="zh-hans-${safe_ref}-${short}"
-          else
-            release_tag="zh-hans-${safe_ref}"
-          fi
+          release_tag="zh-hans-${safe_ref}"
 
           {
             echo "should_build=true"
