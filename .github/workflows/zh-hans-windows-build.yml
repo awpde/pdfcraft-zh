@@ -249,6 +249,9 @@ jobs:
             grep -q "set_startup_update_check(false)" src/apps/pdfcraft/src/main.rs \
               && echo "   已确认启动时不再联网检查更新" \
               || { echo "::error::补丁应用后启动更新检查仍是开启的"; exit 1; }
+            grep -q "fn draw_cjk" src/crates/edit/src/added/draw.rs \
+              && echo "   已确认 draw.rs 含 draw_cjk（新增文字的 CJK 绘制已修）" \
+              || { echo "::error::补丁应用后未找到 draw_cjk，新增文字仍会写成问号"; exit 1; }
           else
             echo "::error::补丁无法干净应用到上游源码（上游可能改动过相关文件）。"
             echo "::error::补丁没生效就没有发布意义 —— 已中止构建，不产出任何 release。"
