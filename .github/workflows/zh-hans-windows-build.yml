@@ -45,8 +45,16 @@ env:
   # 界面显示成一个个方块。已改为含简中字体的版本，并在下面加了两道校验防止再犯。
   CRAFT_FONTS_REPO: storytold/craft-fonts
   CRAFT_FONTS_REF: 8dcdacd5153e64560d109541a47d806f26f048c0
-  # 界面译文所在的文件。没有它就说明这个版本是纯英文，直接跳过构建。
-  ZH_CATALOG: crates/ui-egui/src/i18n/zh-hans.tsv
+  # ---- 界面词条（上游 v0.18.1 起搬到了独立仓库）--------------------------------
+  # 上游把各语言的 TSV 词条从 crates/ui-egui/src/i18n/ 搬到了 storyteller/craft-i18n 的
+  # locales/<locale>/ 目录（common.tsv 共享 + pdfcraft.tsv 本应用专属），
+  # 由上游根目录的 craft-i18n.rev 锁定 commit；crates/ui-egui/build.rs 从
+  # $CRAFT_I18N_DIR/locales/<locale>/pdfcraft.tsv 读词条 —— 没有它，界面就是纯英文。
+  CRAFT_I18N_REPO: storytold/craft-i18n
+  CRAFT_I18N_LOCALE: zh-hans
+  CRAFT_I18N_CATALOG: locales/zh-hans/pdfcraft.tsv
+  # v0.18.1 之前的旧机制：词条就在上游仓库里（保留用于识别旧版本）。
+  ZH_CATALOG_LEGACY: crates/ui-egui/src/i18n/zh-hans.tsv
 
   # ---- 简体中文界面字体（可替换）------------------------------------------------------------
   # 用本仓库 overrides/fonts/<ZH_FONT_DIR>/ 下的字体，替换 craft-fonts 里的简中字体。
@@ -128,10 +136,18 @@ jobs:
           fi
           short="${sha:0:7}"
 
-          # 关键校验：这个 ref 到底有没有简体中文词条
-          if ! gh api "repos/$UPSTREAM/contents/$ZH_CATALOG?ref=$ref" >/dev/null 2>&1; then
-            echo "::notice::上游 ref '$ref' 不含 $ZH_CATALOG，构建出来仍是英文界面，已跳过。"
-            echo "::notice::官方最新 Release 通常属于这种情况；请改用 main 分支，或等上游发版。"
+          # 关键校验：这个 ref 到底有没有简体中文词条。
+          # 新机制（v0.18.1+）：词条在独立仓库 storytold/craft-i18n，上游用 craft-i18n.rev 锁定 commit；
+          # 旧机制：词条就在上游仓库的 crates/ui-egui/src/i18n/。两种都查，查不到就跳过（会出英文界面）。
+          i18n_rev="$(gh api "repos/$UPSTREAM/contents/craft-i18n.rev?ref=$ref" --jq .content 2>/dev/null | base64 -d 2>/dev/null | tr -d '[:space:]' || true)"
+          if [ -n "$i18n_rev" ]; then
+            if ! gh api "repos/$CRAFT_I18N_REPO/contents/$CRAFT_I18N_CATALOG?ref=$i18n_rev" >/dev/null 2>&1; then
+              echo "::notice::craft-i18n@$i18n_rev 里没有 $CRAFT_I18N_CATALOG，构建出来仍是英文界面，已跳过。"
+              skip "craft-i18n@$i18n_rev 不含简体中文词条，跳过构建"
+            fi
+            echo "上游锁定的 craft-i18n commit：$i18n_rev"
+          elif ! gh api "repos/$UPSTREAM/contents/$ZH_CATALOG_LEGACY?ref=$ref" >/dev/null 2>&1; then
+            echo "::notice::上游 ref '$ref' 不含简体中文词条，构建出来仍是英文界面，已跳过。"
             skip "ref '$ref' 不含简体中文词条，跳过构建"
           fi
 
@@ -227,6 +243,27 @@ jobs:
           repository: ${{ env.CRAFT_FONTS_REPO }}
           ref: ${{ env.CRAFT_FONTS_REF }}
           path: craft-fonts
+
+      # 上游 v0.18.1 起，界面词条（各语言的 TSV）搬到了独立仓库 storytold/craft-i18n，
+      # 上游用根目录的 craft-i18n.rev 锁定 commit；crates/ui-egui/build.rs 从
+      # $CRAFT_I18N_DIR/locales/<locale>/pdfcraft.tsv 读词条 —— 没有它，界面就是纯英文。
+      - name: 读上游锁定的 craft-i18n 版本
+        id: i18n
+        shell: bash
+        run: |
+          set -euo pipefail
+          rev_file="src/craft-i18n.rev"
+          test -f "$rev_file" || { echo "::error::上游没有 craft-i18n.rev（这个版本可能还用旧词条机制）"; exit 1; }
+          rev="$(tr -d '[:space:]' < "$rev_file")"
+          echo "上游锁定的 craft-i18n commit: $rev"
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      - name: 拉取 craft-i18n（界面词条，缺失会导致界面变英文）
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRAFT_I18N_REPO }}
+          ref: ${{ steps.i18n.outputs.rev }}
+          path: craft-i18n
 
       # 应用「新增中文文字」修复补丁（合并自原 zh-cjk 流水线）。
       # 补丁两处改动：
@@ -507,9 +544,8 @@ jobs:
 
       - name: 校验中文词条确实存在
         shell: bash
-        working-directory: src
         env:
-          CATALOG: ${{ env.ZH_CATALOG }}
+          CATALOG: ${{ github.workspace }}/craft-i18n/${{ env.CRAFT_I18N_CATALOG }}
         run: |
           set -euo pipefail
           test -s "$CATALOG" || { echo "::error::缺少 $CATALOG，构建结果不会是中文"; exit 1; }
@@ -520,7 +556,7 @@ jobs:
             echo "::error::$CATALOG 看起来不含中文，已中止"; exit 1
           fi
 
-          # 条件追加补充译文：只补上游 zh-hans.tsv 确实缺的条目，整键（context+source）精确比对，
+          # 条件追加补充译文：只补词条里确实缺的条目，整键（context+source）精确比对，
           # 避免子串误判（如 comment menu⇥Edit 误命中 Edit text）。上游将来自己补了这些翻译时，
           # 这里会跳过、不产生重复键。补充译文存于本仓库 overrides/zh-hans-补充译文.tsv。
           SUPP="$GITHUB_WORKSPACE/builder/overrides/zh-hans-补充译文.tsv"
@@ -573,6 +609,9 @@ jobs:
           # 嵌入 craft-fonts，并让缺字体直接报错而不是静默跳过
           CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
           CRAFT_FONTS_REQUIRED: '1'
+          # 嵌入界面词条（上游 v0.18.1 起在独立仓库 storytold/craft-i18n），缺了就直接报错
+          CRAFT_I18N_DIR: ${{ github.workspace }}/craft-i18n
+          CRAFT_I18N_REQUIRED: '1'
         run: ./packaging/windows/package.ps1 -Arch x64
 
       # 校验「自选安装位置」界面真的进了产出的 MSI（而不是只改了源码却没用上）。
