@@ -1,8 +1,8 @@
 diff --git a/apps/pdfcraft/src/main.rs b/apps/pdfcraft/src/main.rs
-index 814730f..d96fb88 100644
+index be2290d..6e2d25a 100644
 --- a/apps/pdfcraft/src/main.rs
 +++ b/apps/pdfcraft/src/main.rs
-@@ -423,7 +423,10 @@ fn app_creator<'a>(
+@@ -415,7 +415,10 @@ fn app_creator<'a>(
          {
              app.motion.source = Some(motion::source());
          }
@@ -132,10 +132,10 @@ index 31a4dc4..db59436 100644
          // Drawn line by line in the item's standard font (`\n` splits lines). Without the face
          // that is also how `draw` redraws an existing item, so it's checked that way.
 diff --git a/crates/edit/src/text.rs b/crates/edit/src/text.rs
-index 98824c7..6338420 100644
+index 3d1626a..5cd5674 100644
 --- a/crates/edit/src/text.rs
 +++ b/crates/edit/src/text.rs
-@@ -29,7 +29,7 @@ pub use session::TextSession;
+@@ -30,7 +30,7 @@ pub use session::TextSession;
  
  mod blocks;
  mod editor;
@@ -145,7 +145,7 @@ index 98824c7..6338420 100644
  mod lines;
  mod rewrite;
 diff --git a/crates/edit/src/text/fallback.rs b/crates/edit/src/text/fallback.rs
-index b8f45a2..4682e63 100644
+index 469d173..a14a97b 100644
 --- a/crates/edit/src/text/fallback.rs
 +++ b/crates/edit/src/text/fallback.rs
 @@ -194,7 +194,7 @@ pub(crate) struct Type3Fallback {
@@ -166,7 +166,7 @@ index b8f45a2..4682e63 100644
      doc: &mut Document,
      fonts_res: &mut Dict,
      text: &str,
-@@ -495,7 +495,7 @@ pub(super) fn add_type3_font(doc: &mut Document, fonts_res: &mut Dict, face: &Cr
+@@ -581,7 +581,7 @@ pub(crate) fn type3_font_dict(doc: &mut Document, glyphs: &[(char, Vec<u8>, f64)
  
  /// The runs that show `text` in the fallback: consecutive characters in one font form one run, so
  /// a font is switched only where the text moves to another font. `None` if a character has no code.
