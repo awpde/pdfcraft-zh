@@ -96,6 +96,37 @@
 
 > 别跳过「先重新生成补丁」这一步。补丁没跟上就直接构建，只会���用户每天收一封失败邮件。
 
+## 1.3 ★ 上游 v0.18.1 起：界面词条搬到了独立仓库（2026-11-09）
+
+**上游把各语言的界面词条从 `crates/ui-egui/src/i18n/*.tsv` 搬走了** —— 现在在
+`storytold/craft-i18n` 仓库的 `locales/<locale>/` 目录下：
+
+| 位置 | 内容 |
+|---|---|
+| `storytold/craft-i18n` 的 `locales/<locale>/pdfcraft.tsv` | 本应用专属词条 |
+| `storytold/craft-i18n` 的 `locales/<locale>/common.tsv` | 多个 Crafting Apps 共享的词条 |
+| 上游仓库根目录的 `craft-i18n.rev` | 锁定上面那个仓库的 commit（一个 40 字符的 sha） |
+
+`crates/ui-egui/build.rs` 从 **`$CRAFT_I18N_DIR/locales/<locale>/pdfcraft.tsv`** 读词条。
+不提供它，编译仍会成功，但**界面是纯英文**（上游 release 用 `CRAFT_I18N_REQUIRED=1`，
+缺了直接构建失败）。
+
+**我们工作流的对应改动**（已落地）：
+
+- 新增两个步骤：「读上游锁定的 craft-i18n 版本」（读 `src/craft-i18n.rev`）+
+  「拉取 craft-i18n」（检出到 `craft-i18n/` 目录）；
+- 编译步骤加 `CRAFT_I18N_DIR` 与 `CRAFT_I18N_REQUIRED=1`；
+- 「校验中文词条确实存在」与「补充译文」改在 `craft-i18n/locales/zh-hans/pdfcraft.tsv` 上做；
+- resolve 阶段的词条检查改成两段式：新机制查 `craft-i18n@rev` 里有没有
+  `locales/zh-hans/pdfcraft.tsv`，旧机制（v0.18.1 之前）查上游仓库里的
+  `crates/ui-egui/src/i18n/zh-hans.tsv`。
+
+> ★ **一个隐蔽的失败模式**：改动前的那几个版本（v0.18.1 / v0.18.2 / v0.19.0）**天天构建
+> 「成功」却一个包都没出** —— resolve 阶段判定「上游不含中文词条」→ `skip`，
+> 而 job 的结论显示成 `skipped`、run 显示成 `success`。
+> **只看 run 的 success/failure 会以为一切正常。** 要看 job 级别的结论，
+> 并且确认 release 真的更新了（`assets[].updatedAt`）。
+
 ## 1.2 ★ 启动时不再联网（补丁干的第二件事）
 
 上游桌面版在 `apps/pdfcraft/src/main.rs` 里无条件 `app.set_startup_update_check(true)`，
