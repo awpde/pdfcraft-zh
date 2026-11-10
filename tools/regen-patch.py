@@ -12,7 +12,7 @@ import sys
 
 GH = 'C:/Users/90714/tools/gh/bin/gh.exe'
 TOKEN = subprocess.run([GH, 'auth', 'token'], capture_output=True, text=True).stdout.strip()
-IP = '140.82.112.5'  # 本机 DNS 会把 api.github.com 指到会 301 的节点，这里固定到可用节点
+IP = '140.82.112.5'
 REPO = 'storytold/pdfcraft'
 W = os.environ.get('TEMP', '/tmp')
 
@@ -85,6 +85,17 @@ def main():
     replace('crates/edit/src/text/fallback.rs',
             '    pub(super) widths: Vec<(char, f64)>,', '    pub(crate) widths: Vec<(char, f64)>,',
             'Type3Fallback::widths 可见性')
+    # v0.20.0 起 type3_encode 返回 Type3Run 结构体（不是元组），它与字段也要放开可见性，
+    # 否则 added 模块用不了（还会触发 private-type-in-public-interface）。
+    replace('crates/edit/src/text/fallback.rs',
+            'pub(super) struct Type3Run {', 'pub(crate) struct Type3Run {', 'Type3Run 可见性')
+    replace('crates/edit/src/text/fallback.rs',
+            '    pub(super) name: String,', '    pub(crate) name: String,', 'Type3Run::name 可见性')
+    replace('crates/edit/src/text/fallback.rs',
+            '    pub(super) bytes: Vec<u8>,', '    pub(crate) bytes: Vec<u8>,', 'Type3Run::bytes 可见性')
+    replace('crates/edit/src/text/fallback.rs',
+            '    pub(super) spacing: Option<f64>,', '    pub(crate) spacing: Option<f64>,',
+            'Type3Run::spacing 可见性')
     # 3) layout.rs（若上游没变，这三处替换会报「锚点未找到」→ 说明 layout.rs 变了，要重新设计）
     replace('crates/edit/src/added/layout.rs',
             '''/// The first character of `t` that would be drawn as `?`: outside WinAnsiEncoding and not drawn
