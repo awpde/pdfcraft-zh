@@ -15,7 +15,7 @@ index 837a803..904f427 100644
          app.os_key_store_ids = cfg!(any(target_os = "macos", target_os = "windows"));
          #[cfg(target_os = "macos")]
 diff --git a/crates/edit/src/added/draw.rs b/crates/edit/src/added/draw.rs
-index 8e0ec75..289f30d 100644
+index 8e0ec75..f78b50b 100644
 --- a/crates/edit/src/added/draw.rs
 +++ b/crates/edit/src/added/draw.rs
 @@ -1,5 +1,6 @@
@@ -26,7 +26,7 @@ index 8e0ec75..289f30d 100644
  };
  use super::types::{AddedText, Align, Family, Ink};
  use super::{
-@@ -107,7 +108,50 @@ pub(super) fn draw_laid_shaped(
+@@ -107,7 +108,54 @@ pub(super) fn draw_laid_shaped(
  /// page's font names. `existing`: the item is being replaced, so a build without the Arabic or
  /// Hebrew face keeps drawing that text as `?`, as before it was supported, rather than refusing to
  /// move it.
@@ -62,9 +62,13 @@ index 8e0ec75..289f30d 100644
 +        let y = r[3] - (i as f64 * 1.2 + 0.95) * t.size;
 +        let (x, tw) = placed(t, r, &paragraphs, i, w, line.matches(' ').count(), false);
 +        out.extend(format!("1 0 0 1 {} {} Tm {} Tw ", n(x), n(y), n(tw)).bytes());
-+        for (name, bytes) in runs {
-+            out.extend(format!("/{name} {} Tf ", n(t.size)).bytes());
-+            out.extend(literal(&bytes));
++        for run in runs {
++            // A variation selector's run is drawn at character spacing zero (it has no glyph).
++            if let Some(spacing) = run.spacing {
++                out.extend(format!("{} Tc\n", n(spacing)).bytes());
++            }
++            out.extend(format!("/{} {} Tf ", run.name, n(t.size)).bytes());
++            out.extend(literal(&run.bytes));
 +            out.extend_from_slice(b" Tj\n");
 +        }
 +    }
@@ -77,7 +81,7 @@ index 8e0ec75..289f30d 100644
      let mut res = Dict::new();
      let mut out = format!(
          "q {} {} {} {} {} {} cm\n",
-@@ -142,6 +186,15 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
+@@ -142,6 +190,15 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
                  out.extend_from_slice(b"Q\n");
                  return Ok((out, res));
              }
@@ -147,9 +151,24 @@ index 2dbf302..93e74da 100644
  mod interp;
  mod lines;
 diff --git a/crates/edit/src/text/fallback.rs b/crates/edit/src/text/fallback.rs
-index f7c795c..faac420 100644
+index f7c795c..61a9ce3 100644
 --- a/crates/edit/src/text/fallback.rs
 +++ b/crates/edit/src/text/fallback.rs
+@@ -11,10 +11,10 @@ pub(super) type Encoder = Box<dyn Fn(&str) -> Option<Vec<Type3Run>>>;
+ /// selector's run) shows at that character spacing: its empty glyph advances nothing, and the
+ /// spacing in force must not add to it either.
+ #[derive(Clone, Debug, PartialEq)]
+-pub(super) struct Type3Run {
+-    pub(super) name: String,
+-    pub(super) bytes: Vec<u8>,
+-    pub(super) spacing: Option<f64>,
++pub(crate) struct Type3Run {
++    pub(crate) name: String,
++    pub(crate) bytes: Vec<u8>,
++    pub(crate) spacing: Option<f64>,
+ }
+ 
+ /// A Unicode variation selector (U+FE00..U+FE0F): it picks a variant of the character before it
 @@ -214,7 +214,7 @@ pub(crate) struct Type3Fallback {
      /// face, `PCHe` for Hebrew text).
      pub(crate) names: Vec<String>,
