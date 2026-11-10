@@ -30,7 +30,7 @@
 
 **一句话**：这里没有任何 PdfCraft 代码，只有一条 GitHub Actions 流水线 ——
 拉上游 [storytold/pdfcraft](https://github.com/storytold/pdfcraft) 的源码，
-套上本仓库 `overrides/` 里的定制（中文界面、字体、图标、安装界面、一处源码补丁），
+套上本仓库 `overrides/` 里的定制（中文界面、字体、图标、一处源码补丁），
 编译成**简体中文 Windows 安装包**发布到 Releases。
 
 | 要点 | 值 |
@@ -188,18 +188,32 @@ python tools/fetchlog.py awpde/pdfcraft-zh <run_id> "已应用 CJK|已确认 add
 `*.patch -text` / `*.tsv -text` 是补丁能打上的前提；
 `*.png binary` / `*.ico binary` 防止二进制图标被行尾转换改坏。
 
-### 3.4 上游发新版后，「补丁」和「安装界面」是两处**独立**的失效点
+### 3.4 上游发新版后，「补丁」是唯一的自动失效点
 
 它们在不同步骤失败，要分别检查，**不要只修一个就以为好了**。
 
 ---
+
+### 3.5 ★ 安装界面不再覆盖（2026-11-10 起）
+
+上游 **v0.20.0（#1139）自己实现了「选择安装位置」**：欢迎页有 `InstallTo` 路径框 +
+`Browse` 按钮 + `BrowseFolder` 浏览对话框，直接用 `INSTALLFOLDER` 属性。
+我们从 v0.7 时代起自建的那套覆盖（`overrides/installer-ui.wxs`）**已删除**。
+
+**为什么删**：自建覆盖既多余（功能上游有了），又因为跟不上上游的文案变化被拦下 ——
+上游把 `PdfContextMenu` 复选框的文案从 `Add "&Edit with PdfCraft"…` 改成
+`Add "&Edit and Combine files"…`（#585 合并文件功能），我们的旧文案不含 `Combine files`，
+上游 `test-msi.ps1:248` 直接抛错 → 构建失败（2026-11-10 踩到）。
+
+**教训（与 photocraft 侧同一条原则）**：**上游原生支持某功能后，就别再自建覆盖** ——
+自建覆盖每逢上游改那块就会失效，而失效方式是「静默”或「构建挂」。
 
 ## 4. 高频任务怎么做
 
 | 场景 | 怎么做 |
 |---|---|
 | 上游发了新版，构建挂在「应用「新增中文文字」修复补丁」 | 按 `docs/维护指南.md` §6.1 用新 tag 的源码重生成 `overrides/cjk.patch`（**注意工具已不兼容 v0.15+**，按文档的手工步骤做） |
-| 构建失败要定位是补丁还是安装界面挂了 | 看失败步骤名：补丁步骤 = 补丁问题；「编译并打包」= 安装界面/上游问题，见 `docs/维护指南.md` §6 |
+| 构建失败要定位是补丁还是上游问题 | 看失败步骤名：补丁步骤 = 补丁问题；「编译并打包」= 上游自检/打包问题，见 `docs/维护指南.md` §6 |
 | 要重新生成补丁 | `python tools/regen-cjk-patch.py <tag>` → 看自检输出 → `--push` → 手动触发一次构建验证 |
 | 改补丁脚本 | 改完**必须**跑 `python tools/verify_regen.py <tag>`，确认脚本仍忠实复现现有补丁 |
 | 用户报图标不对 | 先读 `docs/icons/README.md`。**软件有三处图标来源、要维护四个文件**，窗口 PNG 最容易漏 |
