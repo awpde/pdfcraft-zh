@@ -30,9 +30,13 @@ fn draw_cjk(doc: &mut Document, t: &AddedText, fonts: &mut Dict, out: &mut Vec<u
         let y = r[3] - (i as f64 * 1.2 + 0.95) * t.size;
         let (x, tw) = placed(t, r, &paragraphs, i, w, line.matches(' ').count(), false);
         out.extend(format!("1 0 0 1 {} {} Tm {} Tw ", n(x), n(y), n(tw)).bytes());
-        for (name, bytes) in runs {
-            out.extend(format!("/{name} {} Tf ", n(t.size)).bytes());
-            out.extend(literal(&bytes));
+        for run in runs {
+            // A variation selector's run is drawn at character spacing zero (it has no glyph).
+            if let Some(spacing) = run.spacing {
+                out.extend(format!("{} Tc\n", n(spacing)).bytes());
+            }
+            out.extend(format!("/{} {} Tf ", run.name, n(t.size)).bytes());
+            out.extend(literal(&run.bytes));
             out.extend_from_slice(b" Tj\n");
         }
     }
