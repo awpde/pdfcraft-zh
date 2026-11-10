@@ -1,9 +1,9 @@
 diff --git a/apps/pdfcraft/src/main.rs b/apps/pdfcraft/src/main.rs
-index be2290d..6e2d25a 100644
+index 837a803..904f427 100644
 --- a/apps/pdfcraft/src/main.rs
 +++ b/apps/pdfcraft/src/main.rs
-@@ -415,7 +415,10 @@ fn app_creator<'a>(
-         {
+@@ -473,7 +473,10 @@ fn app_creator<'a>(
+             }
              app.motion.source = Some(motion::source());
          }
 -        app.set_startup_update_check(true);
@@ -15,7 +15,7 @@ index be2290d..6e2d25a 100644
          app.os_key_store_ids = cfg!(any(target_os = "macos", target_os = "windows"));
          #[cfg(target_os = "macos")]
 diff --git a/crates/edit/src/added/draw.rs b/crates/edit/src/added/draw.rs
-index 9404f93..9cdfd79 100644
+index 8e0ec75..289f30d 100644
 --- a/crates/edit/src/added/draw.rs
 +++ b/crates/edit/src/added/draw.rs
 @@ -1,5 +1,6 @@
@@ -24,9 +24,9 @@ index 9404f93..9cdfd79 100644
 +    Piece, arabic_error, hebrew_error, is_arabic, is_cjk, is_hebrew, is_thai, latin_width, norm, shaped_layout, text_rect, thai_error,
 +    wrapped,
  };
- use super::types::{AddedText, Align, Family};
+ use super::types::{AddedText, Align, Family, Ink};
  use super::{
-@@ -256,6 +257,48 @@ fn type3_shaped(doc: &mut Document, clusters: &[&ShapedCluster], outlines: &Hash
+@@ -107,7 +108,50 @@ pub(super) fn draw_laid_shaped(
  /// page's font names. `existing`: the item is being replaced, so a build without the Arabic or
  /// Hebrew face keeps drawing that text as `?`, as before it was supported, rather than refusing to
  /// move it.
@@ -73,9 +73,11 @@ index 9404f93..9cdfd79 100644
 +}
 +
  pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing: bool) -> Result<(Vec<u8>, Dict), EditError> {
++
      let mut res = Dict::new();
      let mut out = format!(
-@@ -291,6 +334,15 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
+         "q {} {} {} {} {} {} cm\n",
+@@ -142,6 +186,15 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
                  out.extend_from_slice(b"Q\n");
                  return Ok((out, res));
              }
@@ -90,12 +92,12 @@ index 9404f93..9cdfd79 100644
 +            }
              res.set(b"Font".to_vec(), Object::Dict(fonts));
              let r = text_rect(t);
-             let [cr, cg, cb] = t.color.map(|v| v.clamp(0.0, 1.0));
+             out.extend(format!("BT /{name} {} Tf {}\n", n(t.size), t.fill_op()).bytes());
 diff --git a/crates/edit/src/added/layout.rs b/crates/edit/src/added/layout.rs
-index 31a4dc4..db59436 100644
+index a6a5522..778a102 100644
 --- a/crates/edit/src/added/layout.rs
 +++ b/crates/edit/src/added/layout.rs
-@@ -118,6 +118,21 @@ pub(super) fn is_hebrew(c: char) -> bool {
+@@ -189,6 +189,21 @@ pub(super) fn is_hebrew(c: char) -> bool {
      matches!(u32::from(c), 0x0591..=0x05F4 | 0xFB1D..=0xFB4F)
  }
  
@@ -117,7 +119,7 @@ index 31a4dc4..db59436 100644
  /// The first character of `t` that would be drawn as `?`: outside WinAnsiEncoding and not drawn
  /// with the craft-fonts Arabic (#125) or Hebrew (#128) face, or Arabic or Hebrew that the face can't
  /// draw (or that has no face to draw it). Page-content tools refuse such text; the Add-text editor
-@@ -136,6 +151,13 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
+@@ -207,6 +222,13 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
      {
          return Some(c);
      }
@@ -132,7 +134,7 @@ index 31a4dc4..db59436 100644
          // Drawn line by line in the item's standard font (`\n` splits lines). Without the face
          // that is also how `draw` redraws an existing item, so it's checked that way.
 diff --git a/crates/edit/src/text.rs b/crates/edit/src/text.rs
-index 3d1626a..5cd5674 100644
+index 2dbf302..93e74da 100644
 --- a/crates/edit/src/text.rs
 +++ b/crates/edit/src/text.rs
 @@ -30,7 +30,7 @@ pub use session::TextSession;
@@ -141,14 +143,14 @@ index 3d1626a..5cd5674 100644
  mod editor;
 -mod fallback;
 +pub(crate) mod fallback;
+ pub mod forms;
  mod interp;
  mod lines;
- mod rewrite;
 diff --git a/crates/edit/src/text/fallback.rs b/crates/edit/src/text/fallback.rs
-index 469d173..a14a97b 100644
+index f7c795c..faac420 100644
 --- a/crates/edit/src/text/fallback.rs
 +++ b/crates/edit/src/text/fallback.rs
-@@ -194,7 +194,7 @@ pub(crate) struct Type3Fallback {
+@@ -214,7 +214,7 @@ pub(crate) struct Type3Fallback {
      /// face, `PCHe` for Hebrew text).
      pub(crate) names: Vec<String>,
      /// Every unique character with its advance (em), in order of first appearance.
@@ -157,7 +159,7 @@ index 469d173..a14a97b 100644
      /// Where each character is shown: the index of its font in `names`, and its code there.
      pub(crate) codes: HashMap<char, (usize, u8)>,
  }
-@@ -354,7 +354,7 @@ pub(crate) fn type3_faces(text: &str, family: crate::added::Family, bold: bool)
+@@ -374,7 +374,7 @@ pub(crate) fn type3_faces(text: &str, family: crate::added::Family, bold: bool)
      Ok((std::iter::once(hebrew).chain(japanese).chain(latin).collect(), true))
  }
  
@@ -166,12 +168,12 @@ index 469d173..a14a97b 100644
      doc: &mut Document,
      fonts_res: &mut Dict,
      text: &str,
-@@ -581,7 +581,7 @@ pub(crate) fn type3_font_dict(doc: &mut Document, glyphs: &[(char, Vec<u8>, f64)
- 
+@@ -614,7 +614,7 @@ pub(crate) fn type3_font_dict(doc: &mut Document, glyphs: &[(char, Vec<u8>, f64)
  /// The runs that show `text` in the fallback: consecutive characters in one font form one run, so
- /// a font is switched only where the text moves to another font. `None` if a character has no code.
--pub(super) fn type3_encode(fallback: &Type3Fallback, text: &str) -> Option<Vec<(String, Vec<u8>)>> {
-+pub(crate) fn type3_encode(fallback: &Type3Fallback, text: &str) -> Option<Vec<(String, Vec<u8>)>> {
-     let mut runs: Vec<(usize, Vec<u8>)> = Vec::new();
+ /// a font is switched only where the text moves to another font. A variation selector forms its
+ /// own run, drawn at character spacing zero (see [`Type3Run`]). `None` if a character has no code.
+-pub(super) fn type3_encode(fallback: &Type3Fallback, text: &str) -> Option<Vec<Type3Run>> {
++pub(crate) fn type3_encode(fallback: &Type3Fallback, text: &str) -> Option<Vec<Type3Run>> {
+     let mut runs: Vec<(usize, Vec<u8>, Option<f64>)> = Vec::new();
      for ch in text.chars() {
          let (font, code) = *fallback.codes.get(&ch)?;
