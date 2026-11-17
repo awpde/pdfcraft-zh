@@ -279,6 +279,9 @@ jobs:
         shell: bash
         env:
           UPSTREAM_REF: ${{ needs.resolve.outputs.ref }}
+          # 自动重生成补丁时要访问 GitHub API 时用这个 token（--src 模式其实用不到，
+          # 但备着，免得以后脚本要下载文件时又踩「没有凭据」的坑）
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
           patch_file="$GITHUB_WORKSPACE/builder/overrides/cjk.patch"
