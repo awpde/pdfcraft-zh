@@ -49,23 +49,33 @@ FILES = [
 
 
 def get_token():
+    """取 GitHub token。
+
+    注意：**不能**在这里无条件调用 gh CLI —— CI runner 上没有 gh，
+    FileNotFoundError 会直接把构建弄挂（2026-11-17 踩过）。
+    所以 gh 只是本地开发的兜底，找不到就返回空串，由 curl() 给出清晰报错。
+    """
     t = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
-    if t:
+    if t and t.strip():
         return t.strip()
-    r = subprocess.run(['C:/Users/90714/tools/gh/bin/gh.exe', 'auth', 'token'],
-                       capture_output=True, text=True)
-    return r.stdout.strip()
-
-
-TOKEN = get_token()
+    exe = os.environ.get('GH_CLI', 'C:/Users/90714/tools/gh/bin/gh.exe')
+    if os.path.isfile(exe):
+        r = subprocess.run([exe, 'auth', 'token'], capture_output=True, text=True)
+        return r.stdout.strip()
+    return ''
 
 
 def curl(url):
+    token = get_token()
+    if not token:
+        raise RuntimeError(
+            '没有 GitHub token：请设置 GITHUB_TOKEN（或 GH_TOKEN）环境变量。'
+            '（用 --src 指定本地源码目录时本来就不需要 token）')
     args = ['curl', '-sSL', '--noproxy', '*', '--ssl-no-revoke']
     if GH_IP:
         host = url.split('/')[2]
         args += ['--resolve', f'{host}:443:{GH_IP}']
-    args += ['-H', f'Authorization: token {TOKEN}',
+    args += ['-H', f'Authorization: token {token}',
              '-H', 'Accept: application/vnd.github+json', url]
     r = subprocess.run(args, capture_output=True)
     try:
