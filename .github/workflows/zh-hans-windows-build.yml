@@ -270,31 +270,67 @@ jobs:
       #   1) crates/edit/src/added/layout.rs 的 first_undrawable 补上 CJK 分支 —— 上游 v0.15.0
       #      起了实现 CJK 回退却漏改这个判定函数，导致「新增文字」对任何中文都飘红并阻止提交；
       #   2) apps/pdfcraft/src/main.rs 关掉启动时的自动更新检查（启动联网查新版本）。
+      # 上游 1.8 天一版，补丁只对准一个版本 —— 每次上游动过这几个文件，这个步骤就会失败
+      # （2026-11-12 起连挂 6 次）。所以这里不只依赖仓库里那份补丁：**打不上时自动重生成**。
+      # 自动重生成用的是仓库里的 tools/regen-patch.py：它按内容匹配改 14 处锚点，
+      # 任何一处对不上就整体失败并逐条列出原因 —— 绝不产出「半个补丁」
+      #（半个补丁可能编译通过但行为不对，那比构建失败危险得多）。
       - name: 应用「新增中文文字」修复补丁
         shell: bash
+        env:
+          UPSTREAM_REF: ${{ needs.resolve.outputs.ref }}
         run: |
           set -uo pipefail
           patch_file="$GITHUB_WORKSPACE/builder/overrides/cjk.patch"
+          applied_patch="$RUNNER_TEMP/cjk-applied.patch"
           test -f "$patch_file" || { echo "::error::本仓库缺少 $patch_file"; exit 1; }
 
+          applied=0
           if git -C src apply --check --ignore-whitespace "$patch_file"; then
             git -C src apply --ignore-whitespace "$patch_file"
-            echo "✅ 已应用 CJK 修复补丁（新增中文文字不再被误判为画不出来）"
-            grep -q "fn is_cjk" src/crates/edit/src/added/layout.rs \
-              && echo "   已确认 layout.rs 含 is_cjk（中文判定已修）" \
-              || { echo "::error::补丁应用后未找到 is_cjk"; exit 1; }
-            grep -q "set_startup_update_check(false)" src/apps/pdfcraft/src/main.rs \
-              && echo "   已确认启动时不再联网检查更新" \
-              || { echo "::error::补丁应用后启动更新检查仍是开启的"; exit 1; }
-            grep -q "fn draw_cjk" src/crates/edit/src/added/draw.rs \
-              && echo "   已确认 draw.rs 含 draw_cjk（新增文字的 CJK 绘制已修）" \
-              || { echo "::error::补丁应用后未找到 draw_cjk，新增文字仍会写成问号"; exit 1; }
+            cp "$patch_file" "$applied_patch"
+            applied=1
+            echo "✅ 已应用仓库里的 CJK 修复补丁"
           else
-            echo "::error::补丁无法干净应用到上游源码（上游可能改动过相关文件）。"
+            echo "::warning::仓库里的补丁对不上当前上游源码（上游可能改过相关文件），尝试自动重新生成"
+            regen="$RUNNER_TEMP/patchregen"
+            mkdir -p "$regen"
+            cp "$GITHUB_WORKSPACE/builder/tools/regen-patch.py" "$GITHUB_WORKSPACE/builder/tools/draw-cjk-block.rs" "$regen/"
+            # --src src：直接用已 checkout 的上游源码作基线，不重新下载（省 API 配额）
+            if python "$regen/regen-patch.py" "$UPSTREAM_REF" --src src \
+                 --out "$regen/cjk.patch" --no-verify; then
+              if git -C src apply --check --ignore-whitespace "$regen/cjk.patch"; then
+                git -C src apply --ignore-whitespace "$regen/cjk.patch"
+                cp "$regen/cjk.patch" "$applied_patch"
+                applied=1
+                echo "✅ 已针对上游 $UPSTREAM_REF 自动重新生成并应用补丁"
+                echo "::notice::本次用的补丁是自动重生成的（仓库里的 overrides/cjk.patch 已过期），请把它更新回仓库"
+              else
+                echo "::error::自动生成的补丁仍无法应用到上游源码"
+              fi
+            else
+              echo "::error::自动重新生成补丁失败 —— 上游的改动超出了自动处理范围。"
+              echo "::error::需要人工重新设计补丁，详见 docs/维护指南.md §6.1。"
+            fi
+          fi
+
+          if [ "$applied" != "1" ]; then
             echo "::error::补丁没生效就没有发布意义 —— 已中止构建，不产出任何 release。"
-            echo "::error::修复方法：拿上游最新源码重新生成 overrides/cjk.patch，详见 docs/维护指南.md。"
             exit 1
           fi
+
+          grep -q "fn is_cjk" src/crates/edit/src/added/layout.rs \
+            && echo "   已确认 layout.rs 含 is_cjk（中文判定已修）" \
+            || { echo "::error::补丁应用后未找到 is_cjk"; exit 1; }
+          grep -q "set_startup_update_check(false)" src/apps/pdfcraft/src/main.rs \
+            && echo "   已确认启动时不再联网检查更新" \
+            || { echo "::error::补丁应用后启动更新检查仍是开启的"; exit 1; }
+          grep -q "fn draw_cjk" src/crates/edit/src/added/draw.rs \
+            && echo "   已确认 draw.rs 含 draw_cjk（新增文字的 CJK 绘制已修）" \
+            || { echo "::error::补丁应用后未找到 draw_cjk，新增文字仍会写成问号"; exit 1; }
+          grep -q "zh-hans build patch" src/crates/edit/src/added/draw.rs \
+            && echo "   已确认源文件带修改声明（Apache-2.0 §4(b)）" \
+            || { echo "::error::补丁里没有修改声明"; exit 1; }
 
       # 把简体中文界面字体换成本仓库自带的字体（默认鸿蒙 HarmonyOS Sans SC）。
       # 做法：把字体拷进 craft-fonts 的 fonts/<目录>/，并改写 fonts/manifest.txt ——
@@ -706,6 +742,13 @@ jobs:
           test -s "$dir/LICENSE-MIT.txt" || { echo "::error::找不到上游 LICENSE-MIT —— 再分发必须随附许可证"; exit 1; }
           [ -s "$dir/NOTICE.txt" ] || echo "::warning::上游仓库没有 NOTICE 文件"
 
+          # 本次实际用的补丁（仓库里那份，或自动重生成的那份）随包分发：
+          # Apache-2.0 第 4(b) 条要求再分发时说明改过哪些文件，把补丁原文给出去最直接。
+          if [ -f "$RUNNER_TEMP/cjk-applied.patch" ]; then
+            cp "$RUNNER_TEMP/cjk-applied.patch" "$dir/cjk.patch"
+            echo "  随附 cjk.patch（本次构建实际使用的补丁）"
+          fi
+
           cat > "$dir/UNOFFICIAL-BUILD-zh-CN.txt" <<NOTICE_EOF
           这是基于 PdfCraft 的【非官方】简体中文构建，不是官方发布。
 
@@ -713,11 +756,35 @@ jobs:
           采用 MIT OR Apache-2.0 双许可（全文见同目录 LICENSE-MIT.txt / LICENSE-APACHE.txt，
           版权、商标与第三方组件声明见 NOTICE.txt）。
 
-          本构建只修改了构建配置，未修改程序源码：
+          ★ 本构建【修改了程序源码】。按 Apache-2.0 第 4(b) 条的要求，每一个被修改的
+            源文件里都带有 "zh-hans build patch" 字样的显著声明；同目录的 cjk.patch 是
+            完整的改动补丁，可直接与上游源码比对。
+
+          修改的源文件（相对上游 ${REF:-unknown}）：
+            crates/edit/src/text.rs
+                fallback 模块由 mod 改为 pub(crate)，让 Type 3 回退字体能被同级的 added 模块使用。
+            crates/edit/src/text/fallback.rs
+                放开 type3_font / type3_encode / Type3Run 及其字段、Type3Fallback::widths
+                的可见性（pub(super) → pub(crate)）。
+            crates/edit/src/added/layout.rs
+                新增 is_cjk() / cjk_has()；first_undrawable() 增加 CJK 分支 —— 判据与
+                回退字体挑脸一致：某字只要有任一候选字体有字形就算画得出来
+                （此前中文一律被判「画不出来」并阻止提交）。
+            crates/edit/src/added/draw.rs
+                新增 draw_cjk()：「新增文字」里含中文时用 Type 3 回退字体绘制
+                （此前标准字体会把每个中文写成 '?'），带 ToUnicode 映射，
+                所以复制和搜索中文仍然可用。
+            apps/pdfcraft/src/main.rs
+                set_startup_update_check(true) → false：启动时不再联网查新版本
+                （只有用户主动点「帮助 → 检查更新」才会联网）。
+
+          修改的构建配置（不含源码）：
             1) 界面简体中文字体改为随包嵌入 HarmonyOS Sans SC；该字体在字体清单中的
                脚本声明为 Hans,Jpan,Latn，因此同时参与 PDF 内文字替换
                （否则简体独有字会报 "Japanese fallback font has no glyph for U+XXXX"）。
-            2) 安装界面新增「选择安装位置」：欢迎页可直接改路径或点 Browse... 浏览。
+            2) 界面词条补充本仓库自有的译文。
+            3) 替换软件主图标与 PDF 文档图标。
+            4) 安装界面沿用上游自带的「选择安装位置」页（不再覆盖上游的安装界面）。
 
           源码：storytold/pdfcraft @ ${REF:-unknown} (${SHA:-unknown})
           构建时间：$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -731,16 +798,42 @@ jobs:
           licensed under MIT OR Apache-2.0 (see LICENSE-MIT.txt / LICENSE-APACHE.txt;
           copyright, trademark and third-party notices in NOTICE.txt).
 
-          Only build configuration was changed; no program source was modified:
+          THIS BUILD MODIFIES THE PROGRAM SOURCE. As required by Apache-2.0 section 4(b),
+          every modified source file carries a prominent "zh-hans build patch" notice; the
+          complete patch is included as cjk.patch so it can be diffed against upstream.
+
+          Modified source files:
+            crates/edit/src/text.rs
+                the fallback module is made pub(crate) so the sibling `added` module can use
+                the Type 3 fallback font.
+            crates/edit/src/text/fallback.rs
+                visibility of type3_font / type3_encode / Type3Run and its fields, and of
+                Type3Fallback::widths, is widened from pub(super) to pub(crate).
+            crates/edit/src/added/layout.rs
+                adds is_cjk() / cjk_has(); first_undrawable() gains a CJK branch that judges a
+                character by the same rule the fallback uses to pick a face (before, any Chinese
+                text was refused as undrawable and could not be committed).
+            crates/edit/src/added/draw.rs
+                adds draw_cjk(): added text containing Chinese is drawn with the Type 3 fallback
+                font (before, the standard font wrote every Chinese character as '?'), with a
+                ToUnicode map so Chinese text can still be copied and searched.
+            apps/pdfcraft/src/main.rs
+                set_startup_update_check(true) -> false: the app no longer queries the network
+                for a new release on startup (only when the user asks for it).
+
+          Build-configuration changes (no source changes):
             1) The Simplified-Chinese UI font is embedded as HarmonyOS Sans SC, declared with
                scripts Hans,Jpan,Latn so it also serves PDF text replacement.
-            2) The installer gained a "choose install location" page.
+            2) Extra translations for this build's own vocabulary.
+            3) The application and PDF document icons are replaced.
+            4) The installer uses upstream's own "choose install location" page.
 
           Source: storytold/pdfcraft @ ${REF:-unknown} (${SHA:-unknown})
           Built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
           Third-party automated build; not affiliated with or endorsed by the original authors.
           Not code-signed.
           NOTICE_EOF
+
 
           test -s "$dir/UNOFFICIAL-BUILD-zh-CN.txt" || { echo "::error::改动声明生成失败（文件为空）"; exit 1; }
           ls -la "$dir"
@@ -784,8 +877,10 @@ jobs:
             echo "> ⚠️ **非官方构建（unofficial build）** —— 本安装包由第三方自动构建，**不是官方发布**，"
             echo "> 与原项目作者不存在隶属、赞助或背书关系。"
             echo "> 程序主体为原作者（ArtCraft Team and the PdfCraft contributors）的作品，"
-            echo "> 采用 MIT OR Apache-2.0 双许可；本构建**只修改了构建配置，未修改程序源码**。"
-            echo "> 具体改动见本 Release 附带的 \`UNOFFICIAL-BUILD-zh-CN.txt\`。"
+            echo "> 采用 MIT OR Apache-2.0 双许可。**本构建修改了程序源码**（中文输入的绘制与判定、"
+            echo "> 关闭启动时的联网更新检查），被改动的源文件都带 \`zh-hans build patch\` 声明，"
+            echo "> 完整补丁随本 Release 一起附上。"
+            echo "> 具体改动见本 Release 附带的 \`UNOFFICIAL-BUILD-zh-CN.txt\` 与 \`cjk.patch\`。"
             echo ""
             echo "由上游源码自动编译，界面译文已编译进二进制，无需任何额外语言包。"
             echo ""
@@ -795,7 +890,7 @@ jobs:
             echo "- 界面简体中文字体：\`${ZH_FONT_FAMILY}\`（已编译进程序，中文不会渲染成方块）"
             echo "- 安装时可自选安装位置：欢迎页的 \`Install to:\` 处可直接改路径，或点 \`Browse…\` 浏览目录（默认 \`C:\Program Files\PdfCraft\`）"
             echo "- 未做代码签名：首次运行 Windows 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可"
-            echo "- 与官方 v0.2.1 同版本装过也没关系：MSI 的 \`AllowSameVersionUpgrades\` 会直接替换旧版"
+            echo "- 与官方同版本装过也没关系：MSI 的 \`AllowSameVersionUpgrades\` 会直接替换旧版"
             echo "- ⚠️ 软件里的「帮助 → 检查更新」指向的是**官方**发布页（那里是英文包），它只适合用来判断上游有没有发新版；**下载请回到本仓库的 Releases 页面**，否则会装回英文版"
             echo ""
             echo "## 安装后如何切换到中文"
@@ -812,6 +907,7 @@ jobs:
             echo "| \`LICENSE-MIT.txt\`、\`LICENSE-APACHE.txt\` | 上游许可证全文 |"
             echo "| \`NOTICE.txt\` | 上游版权声明、商标说明与第三方组件许可清单 |"
             echo "| \`UNOFFICIAL-BUILD-zh-CN.txt\` | 本构建的改动说明（非官方声明）|"
+            echo "| \`cjk.patch\` | 本次构建实际使用的源码补丁（可与上游源码比对）|"
             echo ""
             echo "便携版 zip 内同时含 \`LICENSE-MIT\`、\`LICENSE-APACHE\`、\`README.md\` 及字体许可文件。"
             echo ""
