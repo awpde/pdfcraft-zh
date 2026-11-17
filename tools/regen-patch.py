@@ -1,18 +1,41 @@
 # -*- coding: utf-8 -*-
-"""下载指定上游版本的目标文件，检查补丁锚点，并生成补丁。
+"""生成（或重新生成）CJK 修复补丁：检查锚点、改造目标文件、产出补丁并验证。
 
-用法：python regen_patch.py <tag> [--out <补丁路径>]
+用法：
+    python regen-patch.py <tag> [--out <补丁路径>] [--src <上游源码目录>] [--no-verify]
+
+在 GitHub Actions 里：
+    python tools/regen-patch.py "$REF" --src src --out "$RUNNER_TEMP/cjk.patch" --no-verify
+
+设计要点（每一条都对应一次真实踩坑）：
+  * 锚点全部用「内容匹配」而不是行号 —— 上游改文件也不会错位；
+  * 任何一处锚点找不到、或在文件里出现多次 → **直接失败并逐条列出原因**，
+    绝不产出「半个补丁」（半个补丁比没有补丁更危险：它可能编译通过但行为不对）；
+  * 补丁是纯 LF（不用 CRLF），CI 的 checkout 正好是 LF；
+  * `--src` 给出已 checkout 的上游源码目录时直接用它作基线（CI 里就是 src/），
+    不重新下载 —— 省一次 API 配额，也避免下载到不同 commit。
+
+环境变量：
+    GITHUB_TOKEN / GH_TOKEN   GitHub token（CI 里自动注入）
+    GITHUB_API_URL            API 根地址（CI 里自动注入）
+    GH_API_IP                 API 域名要解析到的 IP（本地 DNS 被劫持时用；留空则不指定）
 """
 import base64
 import json
 import os
-import shutil
 import subprocess
 import sys
 
-GH = 'C:/Users/90714/tools/gh/bin/gh.exe'
-TOKEN = subprocess.run([GH, 'auth', 'token'], capture_output=True, text=True).stdout.strip()
-IP = '140.82.112.5'
+# GitHub Actions 的 Windows runner 上 Python 默认用 cp1252 输出，中文 print 会抛
+# UnicodeEncodeError 直接把构建弄挂（2026-11-01 踩过）。这里强制改成 UTF-8。
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
+API = os.environ.get('GITHUB_API_URL', 'https://api.github.com').rstrip('/')
+GH_IP = os.environ.get('GH_API_IP', '').strip()
 REPO = 'storytold/pdfcraft'
 W = os.environ.get('TEMP', '/tmp')
 
@@ -25,31 +48,65 @@ FILES = [
 ]
 
 
+def get_token():
+    t = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
+    if t:
+        return t.strip()
+    r = subprocess.run(['C:/Users/90714/tools/gh/bin/gh.exe', 'auth', 'token'],
+                       capture_output=True, text=True)
+    return r.stdout.strip()
+
+
+TOKEN = get_token()
+
+
+def curl(url):
+    args = ['curl', '-sSL', '--noproxy', '*', '--ssl-no-revoke']
+    if GH_IP:
+        host = url.split('/')[2]
+        args += ['--resolve', f'{host}:443:{GH_IP}']
+    args += ['-H', f'Authorization: token {TOKEN}',
+             '-H', 'Accept: application/vnd.github+json', url]
+    r = subprocess.run(args, capture_output=True)
+    try:
+        return json.loads(r.stdout.decode('utf-8', errors='replace'))
+    except Exception:
+        raise RuntimeError(f'API 返回的不是 JSON: {url}\n{r.stdout[:200]!r}')
+
+
 def fetch(path, ref):
-    url = f'https://api.github.com/repos/{REPO}/contents/{path}?ref={ref}'
-    args = ['curl', '-sSL', '--noproxy', '*', '--ssl-no-revoke',
-            '--resolve', f'api.github.com:443:{IP}',
-            '-H', f'Authorization: token {TOKEN}',
-            '-H', 'Accept: application/vnd.github+json', url]
-    r = subprocess.run(args, capture_output=True, text=True, encoding='utf-8')
-    d = json.loads(r.stdout)
+    d = curl(f'{API}/repos/{REPO}/contents/{path}?ref={ref}')
     if 'content' not in d:
-        raise RuntimeError(f'{path}@{ref}: {str(d)[:150]}')
+        raise RuntimeError(f'{path}@{ref}: {str(d)[:200]}')
     return base64.b64decode(d['content'])
 
 
 def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return 2
     ref = sys.argv[1]
-    out = W + '/cjk_patch_current.patch'
+    out = os.path.join(W, 'cjk_patch_current.patch')
     if '--out' in sys.argv:
         out = sys.argv[sys.argv.index('--out') + 1]
-    tmp = W + '/pg_' + ref.replace('.', '_') + '_' + str(os.getpid())
+    src_base = None
+    if '--src' in sys.argv:
+        src_base = sys.argv[sys.argv.index('--src') + 1]
+    do_verify = '--no-verify' not in sys.argv
+
+    tmp = os.path.join(W, 'pg_' + ref.replace('.', '_') + '_' + str(os.getpid()))
     if os.path.isdir(tmp):
         subprocess.run(['cmd', '/c', 'rmdir', '/s', '/q', tmp], capture_output=True)  # git objects 只读，走 cmd
     for rel in FILES:
         dst = os.path.join(tmp, rel.replace('/', os.sep))
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        data = fetch(rel, ref)
+        if src_base:
+            s = os.path.join(src_base, rel.replace('/', os.sep))
+            if not os.path.isfile(s):
+                raise RuntimeError(f'--src 目录里没有 {rel}（{s}）')
+            data = open(s, 'rb').read()
+        else:
+            data = fetch(rel, ref)
         open(dst, 'wb').write(data)
         print(f'  {rel}  {len(data)} 字节')
 
@@ -72,14 +129,23 @@ def main():
             errors.append(f'锚点不唯一({src.count(old)}次): {label}')
             return
         open(p, 'w', encoding='utf-8', newline='').write(src.replace(old, new, 1))
-        print(f'  ✅ {label}')
+        print(f'  OK  {label}')
 
     print('\n=== 应用修改 ===')
-    # 1) text.rs
-    replace('crates/edit/src/text.rs', 'mod fallback;', 'pub(crate) mod fallback;', 'text.rs 模块可见性')
-    # 2) fallback.rs
+    # 1) text.rs：把 fallback 模块放开给同级模块用
+    replace('crates/edit/src/text.rs', 'mod fallback;',
+            '// zh-hans build patch (awpde/pdfcraft-zh): the Type 3 fallback font is opened to the\n'
+            '// sibling `added` module so added text can be drawn with it. See\n'
+            '// UNOFFICIAL-BUILD-zh-CN.txt in the release assets.\n'
+            'pub(crate) mod fallback;', 'text.rs 模块可见性')
+    # 2) fallback.rs：放开 Type3 机制给 added 模块用
     replace('crates/edit/src/text/fallback.rs',
-            'pub(super) fn type3_font(', 'pub(crate) fn type3_font(', 'type3_font 可见性')
+            'pub(super) fn type3_font(',
+            '// zh-hans build patch (awpde/pdfcraft-zh): the Type 3 fallback font and its data\n'
+            '// are opened to the sibling `added` module, so added text can be drawn with the\n'
+            '// same mechanism the "replace text" path uses. See UNOFFICIAL-BUILD-zh-CN.txt in\n'
+            '// the release assets.\n'
+            'pub(crate) fn type3_font(', 'type3_font 可见性')
     replace('crates/edit/src/text/fallback.rs',
             'pub(super) fn type3_encode(', 'pub(crate) fn type3_encode(', 'type3_encode 可见性')
     replace('crates/edit/src/text/fallback.rs',
@@ -96,11 +162,15 @@ def main():
     replace('crates/edit/src/text/fallback.rs',
             '    pub(super) spacing: Option<f64>,', '    pub(crate) spacing: Option<f64>,',
             'Type3Run::spacing 可见性')
-    # 3) layout.rs（若上游没变，这三处替换会报「锚点未找到」→ 说明 layout.rs 变了，要重新设计）
+    # 3) layout.rs（若上游没变，这两处替换会报「锚点未找到」→ 说明 layout.rs 变了，要重新设计）
     replace('crates/edit/src/added/layout.rs',
             '''/// The first character of `t` that would be drawn as `?`: outside WinAnsiEncoding and not drawn
 ''',
-            '''/// The characters the craft-fonts fallback faces draw: kana, CJK ideographs and their compatibility
+            '''// zh-hans build patch (awpde/pdfcraft-zh): the CJK branch below judges a character by the
+// same rule the fallback uses to pick a face, so Chinese text is no longer refused as
+// undrawable. See UNOFFICIAL-BUILD-zh-CN.txt in the release assets.
+//
+// The characters the craft-fonts fallback faces draw: kana, CJK ideographs and their compatibility
 /// and full-width forms. The Japanese document faces cover them, and so does a Simplified Chinese
 /// face that declares `Jpan`, so text in them is drawn and must not be refused.
 pub(super) fn is_cjk(c: char) -> bool {
@@ -139,6 +209,8 @@ fn cjk_has(c: char) -> bool {
     # 4) draw.rs
     replace('crates/edit/src/added/draw.rs',
             '    Piece, arabic_error, hebrew_error, is_arabic, is_hebrew, is_thai, latin_width, norm, shaped_layout, text_rect, thai_error, wrapped,',
+            '    // zh-hans build patch (awpde/pdfcraft-zh): `is_cjk` is added by this build;\n'
+            '    // see UNOFFICIAL-BUILD-zh-CN.txt in the release assets.\n'
             '    Piece, arabic_error, hebrew_error, is_arabic, is_cjk, is_hebrew, is_thai, latin_width, norm, shaped_layout, text_rect, thai_error,\n'
             '    wrapped,',
             'draw.rs import 加 is_cjk')
@@ -166,7 +238,10 @@ fn cjk_has(c: char) -> bool {
     # 5) main.rs
     replace('apps/pdfcraft/src/main.rs',
             '        app.set_startup_update_check(true);',
-            '''        // This build never reaches the network on its own: the update check runs only when the
+            '''        // zh-hans build patch (awpde/pdfcraft-zh): changed from true to false. See
+        // UNOFFICIAL-BUILD-zh-CN.txt in the release assets.
+        //
+        // This build never reaches the network on its own: the update check runs only when the
         // user asks for it (Help > Check for updates). Otherwise starting the app would query
         // GitHub for a newer release, which a local-only PDF editor has no reason to do.
         app.set_startup_update_check(false);''',
@@ -174,34 +249,42 @@ fn cjk_has(c: char) -> bool {
 
     if errors:
         print('\n'.join(errors))
-        sys.exit(1)
+        print(f'\n共 {len(errors)} 处锚点对不上 —— 上游的改动超出了自动处理范围，需要人工重新设计补丁。')
+        return 1
 
     r = subprocess.run(['git', '-c', 'core.autocrlf=false', 'diff', 'HEAD'], cwd=tmp, capture_output=True)
     patch = r.stdout.decode('utf-8')
-    open(out, 'w', encoding='utf-8', newline='').write(patch)
-    print(f'\n✅ 补丁: {out}  {len(patch)} 字节, {patch.count(chr(10) + "@@")} hunk, CR={patch.count(chr(13))}')
+    with open(out, 'w', encoding='utf-8', newline='') as f:
+        f.write(patch)
+    print(f'\n补丁: {out}  {len(patch)} 字节, {patch.count(chr(10) + "@@")} hunk, CR={patch.count(chr(13))}')
 
-    # 验证：git apply --check
-    # 验证：把**原版**文件重新下载到一个干净目录，再 git apply --check
-    # （不要用 git checkout 还原：copytree 保留时间戳，git 的 stat cache 会跳过还原，
-    #  结果拿修改过的文件去验补丁，必然失败 —— 纯浪费时间。）
-    v = W + '/verify_current_' + str(os.getpid())
+    if not do_verify:
+        return 0
+
+    # 验证：在**干净的原版副本**上 git apply --check。
+    # 不要用 git checkout 还原：copytree 保留时间戳，git 的 stat cache 会跳过还原，
+    # 结果拿修改过的文件去验补丁，必然失败 —— 纯浪费时间。
+    v = os.path.join(W, 'verify_current_' + str(os.getpid()))
     if os.path.isdir(v):
         subprocess.run(['cmd', '/c', 'rmdir', '/s', '/q', v], capture_output=True)
     for rel in FILES:
         dst = os.path.join(v, rel.replace('/', os.sep))
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        open(dst, 'wb').write(fetch(rel, ref))
+        if src_base:
+            open(dst, 'wb').write(open(os.path.join(src_base, rel.replace('/', os.sep)), 'rb').read())
+        else:
+            open(dst, 'wb').write(fetch(rel, ref))
     os.chdir(v)
     subprocess.run(['git', 'init', '-q'], check=True)
     subprocess.run(['git', 'add', '-A'], check=True)
     env2 = dict(os.environ, GIT_AUTHOR_NAME='x', GIT_AUTHOR_EMAIL='a@b.c',
                 GIT_COMMITTER_NAME='x', GIT_COMMITTER_EMAIL='a@b.c')
     subprocess.run(['git', 'commit', '-qm', 'base'], check=True, env=env2)
-    r2 = subprocess.run(['git', '-c', 'core.autocrlf=false', 'apply', '--check', out], capture_output=True, text=True)
-    print('✅ git apply --check:', '通过' if r2.returncode == 0 else '失败\n' + r2.stderr[:600])
-    sys.exit(0 if r2.returncode == 0 else 1)
+    r2 = subprocess.run(['git', '-c', 'core.autocrlf=false', 'apply', '--check', out],
+                        capture_output=True, text=True)
+    print('git apply --check:', '通过' if r2.returncode == 0 else '失败\n' + r2.stderr[:600])
+    return 0 if r2.returncode == 0 else 1
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
