@@ -1,5 +1,5 @@
 diff --git a/apps/pdfcraft/src/main.rs b/apps/pdfcraft/src/main.rs
-index 837a803..904f427 100644
+index 797e14e..6de2de0 100644
 --- a/apps/pdfcraft/src/main.rs
 +++ b/apps/pdfcraft/src/main.rs
 @@ -473,7 +473,10 @@ fn app_creator<'a>(
@@ -12,8 +12,8 @@ index 837a803..904f427 100644
 +        // GitHub for a newer release, which a local-only PDF editor has no reason to do.
 +        app.set_startup_update_check(false);
          app.printer_source = Some(pdfcraft_ui_egui::system_printers());
+         app.two_sided_source = Some(pdfcraft_ui_egui::system_two_sided());
          app.os_key_store_ids = cfg!(any(target_os = "macos", target_os = "windows"));
-         #[cfg(target_os = "macos")]
 diff --git a/crates/edit/src/added/draw.rs b/crates/edit/src/added/draw.rs
 index 8e0ec75..f78b50b 100644
 --- a/crates/edit/src/added/draw.rs
@@ -138,7 +138,7 @@ index a6a5522..778a102 100644
          // Drawn line by line in the item's standard font (`\n` splits lines). Without the face
          // that is also how `draw` redraws an existing item, so it's checked that way.
 diff --git a/crates/edit/src/text.rs b/crates/edit/src/text.rs
-index 2dbf302..93e74da 100644
+index eba8834..5d0c7e8 100644
 --- a/crates/edit/src/text.rs
 +++ b/crates/edit/src/text.rs
 @@ -30,7 +30,7 @@ pub use session::TextSession;
@@ -151,10 +151,10 @@ index 2dbf302..93e74da 100644
  mod interp;
  mod lines;
 diff --git a/crates/edit/src/text/fallback.rs b/crates/edit/src/text/fallback.rs
-index f7c795c..61a9ce3 100644
+index d186548..1d4bcf7 100644
 --- a/crates/edit/src/text/fallback.rs
 +++ b/crates/edit/src/text/fallback.rs
-@@ -11,10 +11,10 @@ pub(super) type Encoder = Box<dyn Fn(&str) -> Option<Vec<Type3Run>>>;
+@@ -12,10 +12,10 @@ pub(super) type Encoder = Box<dyn Fn(&str) -> Option<Vec<Type3Run>>>;
  /// selector's run) shows at that character spacing: its empty glyph advances nothing, and the
  /// spacing in force must not add to it either.
  #[derive(Clone, Debug, PartialEq)]
@@ -169,7 +169,7 @@ index f7c795c..61a9ce3 100644
  }
  
  /// A Unicode variation selector (U+FE00..U+FE0F): it picks a variant of the character before it
-@@ -214,7 +214,7 @@ pub(crate) struct Type3Fallback {
+@@ -215,7 +215,7 @@ pub(crate) struct Type3Fallback {
      /// face, `PCHe` for Hebrew text).
      pub(crate) names: Vec<String>,
      /// Every unique character with its advance (em), in order of first appearance.
@@ -178,7 +178,7 @@ index f7c795c..61a9ce3 100644
      /// Where each character is shown: the index of its font in `names`, and its code there.
      pub(crate) codes: HashMap<char, (usize, u8)>,
  }
-@@ -374,7 +374,7 @@ pub(crate) fn type3_faces(text: &str, family: crate::added::Family, bold: bool)
+@@ -375,7 +375,7 @@ pub(crate) fn type3_faces(text: &str, family: crate::added::Family, bold: bool)
      Ok((std::iter::once(hebrew).chain(japanese).chain(latin).collect(), true))
  }
  
@@ -187,7 +187,7 @@ index f7c795c..61a9ce3 100644
      doc: &mut Document,
      fonts_res: &mut Dict,
      text: &str,
-@@ -614,7 +614,7 @@ pub(crate) fn type3_font_dict(doc: &mut Document, glyphs: &[(char, Vec<u8>, f64)
+@@ -615,7 +615,7 @@ pub(crate) fn type3_font_dict(doc: &mut Document, glyphs: &[(char, Vec<u8>, f64)
  /// The runs that show `text` in the fallback: consecutive characters in one font form one run, so
  /// a font is switched only where the text moves to another font. A variation selector forms its
  /// own run, drawn at character spacing zero (see [`Type3Run`]). `None` if a character has no code.
