@@ -1,37 +1,32 @@
 diff --git a/apps/pdfcraft/src/main.rs b/apps/pdfcraft/src/main.rs
-index 797e14e..64cb2d7 100644
+index 837a803..904f427 100644
 --- a/apps/pdfcraft/src/main.rs
 +++ b/apps/pdfcraft/src/main.rs
-@@ -473,7 +473,13 @@ fn app_creator<'a>(
+@@ -473,7 +473,10 @@ fn app_creator<'a>(
              }
              app.motion.source = Some(motion::source());
          }
 -        app.set_startup_update_check(true);
-+        // zh-hans build patch (awpde/pdfcraft-zh): changed from true to false. See
-+        // UNOFFICIAL-BUILD-zh-CN.txt in the release assets.
-+        //
 +        // This build never reaches the network on its own: the update check runs only when the
 +        // user asks for it (Help > Check for updates). Otherwise starting the app would query
 +        // GitHub for a newer release, which a local-only PDF editor has no reason to do.
 +        app.set_startup_update_check(false);
          app.printer_source = Some(pdfcraft_ui_egui::system_printers());
-         app.two_sided_source = Some(pdfcraft_ui_egui::system_two_sided());
          app.os_key_store_ids = cfg!(any(target_os = "macos", target_os = "windows"));
+         #[cfg(target_os = "macos")]
 diff --git a/crates/edit/src/added/draw.rs b/crates/edit/src/added/draw.rs
-index 8e0ec75..ffb7dda 100644
+index 8e0ec75..f78b50b 100644
 --- a/crates/edit/src/added/draw.rs
 +++ b/crates/edit/src/added/draw.rs
-@@ -1,5 +1,8 @@
+@@ -1,5 +1,6 @@
  use super::layout::{
 -    Piece, arabic_error, hebrew_error, is_arabic, is_hebrew, is_thai, latin_width, norm, shaped_layout, text_rect, thai_error, wrapped,
-+    // zh-hans build patch (awpde/pdfcraft-zh): `is_cjk` is added by this build;
-+    // see UNOFFICIAL-BUILD-zh-CN.txt in the release assets.
 +    Piece, arabic_error, hebrew_error, is_arabic, is_cjk, is_hebrew, is_thai, latin_width, norm, shaped_layout, text_rect, thai_error,
 +    wrapped,
  };
  use super::types::{AddedText, Align, Family, Ink};
  use super::{
-@@ -107,7 +110,54 @@ pub(super) fn draw_laid_shaped(
+@@ -107,7 +108,54 @@ pub(super) fn draw_laid_shaped(
  /// page's font names. `existing`: the item is being replaced, so a build without the Arabic or
  /// Hebrew face keeps drawing that text as `?`, as before it was supported, rather than refusing to
  /// move it.
@@ -86,7 +81,7 @@ index 8e0ec75..ffb7dda 100644
      let mut res = Dict::new();
      let mut out = format!(
          "q {} {} {} {} {} {} cm\n",
-@@ -142,6 +192,15 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
+@@ -142,6 +190,15 @@ pub(super) fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict
                  out.extend_from_slice(b"Q\n");
                  return Ok((out, res));
              }
@@ -103,18 +98,14 @@ index 8e0ec75..ffb7dda 100644
              let r = text_rect(t);
              out.extend(format!("BT /{name} {} Tf {}\n", n(t.size), t.fill_op()).bytes());
 diff --git a/crates/edit/src/added/layout.rs b/crates/edit/src/added/layout.rs
-index a6a5522..14c4138 100644
+index a6a5522..778a102 100644
 --- a/crates/edit/src/added/layout.rs
 +++ b/crates/edit/src/added/layout.rs
-@@ -189,6 +189,25 @@ pub(super) fn is_hebrew(c: char) -> bool {
+@@ -189,6 +189,21 @@ pub(super) fn is_hebrew(c: char) -> bool {
      matches!(u32::from(c), 0x0591..=0x05F4 | 0xFB1D..=0xFB4F)
  }
  
-+// zh-hans build patch (awpde/pdfcraft-zh): the CJK branch below judges a character by the
-+// same rule the fallback uses to pick a face, so Chinese text is no longer refused as
-+// undrawable. See UNOFFICIAL-BUILD-zh-CN.txt in the release assets.
-+//
-+// The characters the craft-fonts fallback faces draw: kana, CJK ideographs and their compatibility
++/// The characters the craft-fonts fallback faces draw: kana, CJK ideographs and their compatibility
 +/// and full-width forms. The Japanese document faces cover them, and so does a Simplified Chinese
 +/// face that declares `Jpan`, so text in them is drawn and must not be refused.
 +pub(super) fn is_cjk(c: char) -> bool {
@@ -132,7 +123,7 @@ index a6a5522..14c4138 100644
  /// The first character of `t` that would be drawn as `?`: outside WinAnsiEncoding and not drawn
  /// with the craft-fonts Arabic (#125) or Hebrew (#128) face, or Arabic or Hebrew that the face can't
  /// draw (or that has no face to draw it). Page-content tools refuse such text; the Add-text editor
-@@ -207,6 +226,13 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
+@@ -207,6 +222,13 @@ pub fn first_undrawable(t: &AddedText) -> Option<char> {
      {
          return Some(c);
      }
@@ -147,26 +138,23 @@ index a6a5522..14c4138 100644
          // Drawn line by line in the item's standard font (`\n` splits lines). Without the face
          // that is also how `draw` redraws an existing item, so it's checked that way.
 diff --git a/crates/edit/src/text.rs b/crates/edit/src/text.rs
-index eba8834..85fb557 100644
+index 2dbf302..93e74da 100644
 --- a/crates/edit/src/text.rs
 +++ b/crates/edit/src/text.rs
-@@ -30,7 +30,10 @@ pub use session::TextSession;
+@@ -30,7 +30,7 @@ pub use session::TextSession;
  
  mod blocks;
  mod editor;
 -mod fallback;
-+// zh-hans build patch (awpde/pdfcraft-zh): the Type 3 fallback font is opened to the
-+// sibling `added` module so added text can be drawn with it. See
-+// UNOFFICIAL-BUILD-zh-CN.txt in the release assets.
 +pub(crate) mod fallback;
  pub mod forms;
  mod interp;
  mod lines;
 diff --git a/crates/edit/src/text/fallback.rs b/crates/edit/src/text/fallback.rs
-index d186548..85b959d 100644
+index f7c795c..61a9ce3 100644
 --- a/crates/edit/src/text/fallback.rs
 +++ b/crates/edit/src/text/fallback.rs
-@@ -12,10 +12,10 @@ pub(super) type Encoder = Box<dyn Fn(&str) -> Option<Vec<Type3Run>>>;
+@@ -11,10 +11,10 @@ pub(super) type Encoder = Box<dyn Fn(&str) -> Option<Vec<Type3Run>>>;
  /// selector's run) shows at that character spacing: its empty glyph advances nothing, and the
  /// spacing in force must not add to it either.
  #[derive(Clone, Debug, PartialEq)]
@@ -181,7 +169,7 @@ index d186548..85b959d 100644
  }
  
  /// A Unicode variation selector (U+FE00..U+FE0F): it picks a variant of the character before it
-@@ -215,7 +215,7 @@ pub(crate) struct Type3Fallback {
+@@ -214,7 +214,7 @@ pub(crate) struct Type3Fallback {
      /// face, `PCHe` for Hebrew text).
      pub(crate) names: Vec<String>,
      /// Every unique character with its advance (em), in order of first appearance.
@@ -190,20 +178,16 @@ index d186548..85b959d 100644
      /// Where each character is shown: the index of its font in `names`, and its code there.
      pub(crate) codes: HashMap<char, (usize, u8)>,
  }
-@@ -375,7 +375,11 @@ pub(crate) fn type3_faces(text: &str, family: crate::added::Family, bold: bool)
+@@ -374,7 +374,7 @@ pub(crate) fn type3_faces(text: &str, family: crate::added::Family, bold: bool)
      Ok((std::iter::once(hebrew).chain(japanese).chain(latin).collect(), true))
  }
  
 -pub(super) fn type3_font(
-+// zh-hans build patch (awpde/pdfcraft-zh): the Type 3 fallback font and its data
-+// are opened to the sibling `added` module, so added text can be drawn with the
-+// same mechanism the "replace text" path uses. See UNOFFICIAL-BUILD-zh-CN.txt in
-+// the release assets.
 +pub(crate) fn type3_font(
      doc: &mut Document,
      fonts_res: &mut Dict,
      text: &str,
-@@ -615,7 +619,7 @@ pub(crate) fn type3_font_dict(doc: &mut Document, glyphs: &[(char, Vec<u8>, f64)
+@@ -614,7 +614,7 @@ pub(crate) fn type3_font_dict(doc: &mut Document, glyphs: &[(char, Vec<u8>, f64)
  /// The runs that show `text` in the fallback: consecutive characters in one font form one run, so
  /// a font is switched only where the text moves to another font. A variation selector forms its
  /// own run, drawn at character spacing zero (see [`Type3Run`]). `None` if a character has no code.
