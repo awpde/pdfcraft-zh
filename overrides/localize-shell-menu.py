@@ -3,6 +3,11 @@
 
 What it changes (by content match, never by line number):
 
+0. packaging/windows/install-policy.json
+   - the registration contract that check-install-policy.ps1 verifies row by row
+     (Root, Key, Name, Value) also pins the Edit label, the Edit icon value and the
+     CreatePdf labels -- all three must track the .wxs or the MSI self-check fails
+     with "Lost or changed registration".
 1. packaging/windows/pdfcraft.wxs
    - "Edit with PdfCraft"          -> 用 PdfCraft 编辑
    - "Combine files in PdfCraft"   -> 在 PdfCraft 中合并文件…
@@ -36,7 +41,7 @@ Both are written back unchanged in kind. All log output is ASCII-only unless
 stdout can be reconfigured to UTF-8 (the GitHub Actions Windows runner's
 Python defaults to cp1252 and a non-ASCII print() would raise).
 
-Usage: python localize-shell-menu.py <pdfcraft.wxs> <test-msi.ps1>
+Usage: python localize-shell-menu.py <pdfcraft.wxs> <test-msi.ps1> [install-policy.json]
 """
 import re
 import sys
@@ -58,6 +63,14 @@ OLD_COMBINE = 'Combine files in PdfCraft'
 OLD_CREATE = 'Create PDF with PdfCraft…'
 
 ICON_OLD = '"[#PdfcraftExe]",0'
+
+# install-policy.json stores the ellipsis as a literal 6-character \u2026 escape
+# and the icon value with escaped inner quotes ("\"[#PdfcraftExe]\",0"), so the
+# JSON-side needles are spelled out separately -- LABEL_*/OLD_* above carry the
+# real characters and must not be reused here.
+OLD_CREATE_JSON = 'Create PDF with PdfCraft\\u2026'
+ICON_OLD_JSON = '\\"[#PdfcraftExe]\\",0'
+ICON_NEW_JSON = '\\"[#PdfcraftExe]\\",-2'
 ICON_NEW = '"[#PdfcraftExe]",-2'
 
 IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'tif', 'tiff', 'gif', 'bmp', 'jp2', 'j2k', 'jpx']
@@ -85,13 +98,15 @@ def replace_exact(src, old, new, expect, label, errors):
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print('usage: localize-shell-menu.py <pdfcraft.wxs> <test-msi.ps1>')
+    if len(sys.argv) not in (3, 4):
+        print('usage: localize-shell-menu.py <pdfcraft.wxs> <test-msi.ps1> [install-policy.json]')
         return 2
     wxs_path, ps1_path = sys.argv[1], sys.argv[2]
+    policy_path = sys.argv[3] if len(sys.argv) == 4 else None
 
     wxs, wxs_bom = read(wxs_path)
     ps1, ps1_bom = read(ps1_path)
+    policy, policy_bom = read(policy_path) if policy_path else (None, False)
 
     already = LABEL_EDIT in wxs or LABEL_CREATE in wxs
     if already:
@@ -147,6 +162,24 @@ def main() -> int:
     ps1 = replace_exact(ps1, f"'{ICON_OLD}'", f"'{ICON_NEW}'", 2,
                         'ps1 Icon assertions', errors)
 
+    # ---- install-policy.json ----
+    # check-install-policy.ps1 verifies this contract row by row against the MSI's
+    # Registry table, Value included, so the labels and the Edit icon must track
+    # the .wxs. Written with \uXXXX escapes so the file stays pure ASCII, matching
+    # how upstream already escapes the ellipsis ("...\u2026").
+    if policy is not None:
+        j_edit = LABEL_EDIT.encode('unicode_escape').decode('ascii')
+        j_combine = LABEL_COMBINE.encode('unicode_escape').decode('ascii')
+        j_create = LABEL_CREATE.encode('unicode_escape').decode('ascii')
+        policy = replace_exact(policy, f'"{OLD_EDIT}"', f'"{j_edit}"', 1,
+                               'policy Edit label', errors)
+        policy = replace_exact(policy, f'"{OLD_CREATE_JSON}"', f'"{j_create}"',
+                               len(IMAGE_EXTS), 'policy CreatePdf labels', errors)
+        # The Edit verb's icon row only: the file also has a bare ",0" shortcut-icon
+        # entry and two entries that are already ,-2, all of which must stay.
+        policy = replace_exact(policy, ICON_OLD_JSON + '"', ICON_NEW_JSON + '"', 1,
+                               'policy Edit icon', errors)
+
     if errors:
         print('problems found; no file was written:')
         for e in errors:
@@ -164,9 +197,16 @@ def main() -> int:
         if leftover in ps1:
             print(f'- leftover in ps1 after replace: "{leftover}" (should be gone)')
             return 1
+    if policy is not None:
+        for leftover in (f'"{OLD_EDIT}"', f'"{OLD_CREATE_JSON}"', ICON_OLD_JSON + '"'):
+            if leftover in policy:
+                print(f'- leftover in policy after replace: "{leftover}" (should be gone)')
+                return 1
 
     write(wxs_path, wxs, wxs_bom)
     write(ps1_path, ps1, ps1_bom)
+    if policy is not None:
+        write(policy_path, policy, policy_bom)
     print(f'  wxs: 3 labels localized, 2 icon rows switched to {ICON_NEW}, '
           f'{added_icons}/10 CreatePdf verbs gained an icon row')
     print(f'  ps1: 5 assertion constants updated to the Chinese labels and {ICON_NEW}')
