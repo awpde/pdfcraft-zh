@@ -170,6 +170,33 @@ python tools/regen-patch.py v0.21.1 --out overrides/cjk.patch
 
 ---
 
+## 1.4 ★ 系统右键菜单已汉化，菜单图标改用文档图标（2026-11-23）
+
+Windows 资源管理器的右键菜单（上游 MSI 注册的三组 shell verb）**文案已汉化**，
+图标从软件主 logo（exe 资源 0，大 P）换成 **PDF 文档图标（exe 资源 -2）**，
+10 个图片转 PDF verb（上游原本没有图标）也补上了同一图标：
+
+| 原文 | 汉化 | 译法出处 |
+|---|---|---|
+| Edit with PdfCraft | 用 PdfCraft 编辑 | 与词条风格一致（用/在 + PdfCraft + 动词） |
+| Combine files in PdfCraft | 在 PdfCraft 中合并文件… | 词条原文就是 `Combine files in PdfCraft… → 在 PdfCraft 中合并文件…` |
+| Create PDF with PdfCraft…（10 种图片扩展） | 用 PdfCraft 创建 PDF… | 词条 `Create PDF → 创建 PDF` |
+
+**关键坑（改这套文案必须知道）**：上游把这三组文案**写死在 `test-msi.ps1` 的断言里**
+（MSI 自检用 SQL 逐字比对 Registry 表，见 `Assert-Equal $pdfMenu[1] 'Edit with PdfCraft'`
+等 5 处），`Icon` 值 `"[#PdfcraftExe]",0` 也有 2 处断言。所以**改 wxs 必须连断言一起改**，
+否则构建在 MSI 自检处以更难懂的方式挂掉。`overrides/localize-shell-menu.py` 一并处理，
+并做了三重保护：
+
+1. 按内容匹配改，任何一处锚点对不上 → **整体失败并逐条列出，绝不留下半更新的两个文件**；
+2. 幂等（重复运行是 no-op）；
+3. workflow 里另有第二道硬校验（3 组中文文案 + 图标 12 处引用），脚本静默失效直接中止构建。
+
+**不动的部分**：欢迎页复选框 `Add &Edit and Combine files…` 保持英文 —— 上游
+`test-msi.ps1:248` 断言它必须含 `&Edit` 和 `Combine files`，且它属于安装器 UI 而非右键菜单项。
+
+两个文件里英文**注释**保留原文（不汉化），方便与上游逐行对照。
+
 ## 2. 开工前，先按这个顺序读
 
 1. **本文件**（你现在在读）
