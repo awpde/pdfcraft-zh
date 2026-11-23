@@ -370,7 +370,7 @@ jobs:
             || { echo "::error::文档图标（资源 -2）应有 12 处引用（2 处替换 + 10 处新增）"; exit 1; }
           [ "$(grep -c 'u7528 PdfCraft' "$policy")" -eq 11 ] \
             || { echo "::error::install-policy.json 契约应含 11 处中文文案（1 Edit + 10 CreatePdf）"; exit 1; }
-          [ "$(grep -c '\\\"\[#PdfcraftExe\\\]\",-2' "$policy")" -ge 3 ] \
+          [ "$(grep -cF '\"[#PdfcraftExe]\",-2' "$policy")" -ge 3 ] \
             || { echo "::error::install-policy.json 的 Edit 图标应为文档图标（,-2）"; exit 1; }
           echo "✅ 右键菜单已汉化（用 PdfCraft 编辑 / 在 PdfCraft 中合并文件… / 用 PdfCraft 创建 PDF…）"
           echo "✅ 菜单图标已换成 PDF 文档图标（exe 资源 -2，12 处引用）"
