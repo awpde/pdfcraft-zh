@@ -340,6 +340,35 @@ jobs:
       # 删掉原有的 Hans（简中）行，再追加我们的一行。build.rs 只读 manifest 的前 4 列
       # （family/style/file/scripts），不校验 sha256，所以这样替换是安全的，且上游
       # 更新 craft-fonts 后本步骤照样生效（我们只替掉简中那一行，日文等其余行保持上游原样）。
+      # 汉化 Windows 资源管理器的右键菜单，并把菜单图标从软件主 logo（大 P）换成
+      # PDF 文档图标（exe 资源 -2，即文件类型对应的那个小图标；.pdf 的默认图标用的
+      # 就是它）。译法与 craft-i18n zh-hans 词条一致（"Combine files in PdfCraft…"
+      # 词条本身就是 "在 PdfCraft 中合并文件…"）。
+      # 上游把这三组文案写死在 test-msi.ps1 的断言里（MSI 自检逐字比对 Registry 表），
+      # 所以文案和图标改了之后断言常量必须同步 —— 脚本一并处理，任何一处对不上
+      # 就整体失败，绝不留下半更新的两个文件（半更新会在自检处以更难懂的方式挂掉）。
+      # 欢迎页复选框文案不动：上游断言其英文原文，且它是安装器 UI，不是右键菜单项。
+      - name: 汉化系统右键菜单并换用文档图标
+        shell: bash
+        run: |
+          set -euo pipefail
+          wxs="src/packaging/windows/pdfcraft.wxs"
+          ps1="src/packaging/windows/test-msi.ps1"
+          test -f "$wxs" || { echo "::error::找不到 $wxs（上游目录结构可能变了）"; exit 1; }
+          test -f "$ps1" || { echo "::error::找不到 $ps1（上游目录结构可能变了）"; exit 1; }
+          python "$GITHUB_WORKSPACE/builder/overrides/localize-shell-menu.py" "$wxs" "$ps1"
+          # 校验（第二道，防脚本静默失效）：中文菜单文案与文档图标必须真的进了 wxs
+          grep -q 'Value="用 PdfCraft 编辑"' "$wxs" \
+            || { echo "::error::右键菜单 Edit 文案未汉化"; exit 1; }
+          grep -q 'Value="在 PdfCraft 中合并文件…"' "$wxs" \
+            || { echo "::error::右键菜单 Combine 文案未汉化"; exit 1; }
+          [ "$(grep -c 'Value="用 PdfCraft 创建 PDF…"' "$wxs")" -eq 10 ] \
+            || { echo "::error::右键菜单 CreatePdf 文案应有 10 处（10 种图片扩展）"; exit 1; }
+          [ "$(grep -c 'Name="Icon" Value="&quot;\[#PdfcraftExe\]&quot;,-2"' "$wxs")" -eq 12 ] \
+            || { echo "::error::文档图标（资源 -2）应有 12 处引用（2 处替换 + 10 处新增）"; exit 1; }
+          echo "✅ 右键菜单已汉化（用 PdfCraft 编辑 / 在 PdfCraft 中合并文件… / 用 PdfCraft 创建 PDF…）"
+          echo "✅ 菜单图标已换成 PDF 文档图标（exe 资源 -2，12 处引用）"
+
       - name: 应用简体中文界面字体
         shell: bash
         run: |
