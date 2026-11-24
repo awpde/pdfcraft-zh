@@ -275,7 +275,14 @@ jobs:
       # 自动重生成用的是仓库里的 tools/regen-patch.py：它按内容匹配改 14 处锚点，
       # 任何一处对不上就整体失败并逐条列出原因 —— 绝不产出「半个补丁」
       #（半个补丁可能编译通过但行为不对，那比构建失败危险得多）。
-      - name: 应用「新增中文文字」修复补丁
+      # 上游 1.8 天一版，两个补丁（cjk 中文输入修复 + cursor 高对比软光标）都只对准一个
+      # 上游版本 —— 任何一个打不上，就用仓库里的 tools/regen-patch.py 针对当前上游
+      # **一次重新生成两个**并应用（两者按 pathspec 拆分，验证各自独立）。
+      # regen 脚本按内容匹配改锚点，任何一处对不上就整体失败并逐条列出原因 ——
+      # 绝不产出「半个补丁」（半个补丁可能编译通过但行为不对，那比构建失败危险得多）。
+      # cursor 补丁改自上游 PR #6173（白底页面上 I-beam/十字不可见，#3935/#5738），
+      # 上游合并 #6173 后整个摘除。
+      - name: 应用「新增中文文字」与「软光标」修复补丁
         shell: bash
         env:
           UPSTREAM_REF: ${{ needs.resolve.outputs.ref }}
@@ -284,30 +291,40 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
-          patch_file="$GITHUB_WORKSPACE/builder/overrides/cjk.patch"
+          cjk_patch="$GITHUB_WORKSPACE/builder/overrides/cjk.patch"
+          cursor_patch="$GITHUB_WORKSPACE/builder/overrides/cursor.patch"
           applied_patch="$RUNNER_TEMP/cjk-applied.patch"
-          test -f "$patch_file" || { echo "::error::本仓库缺少 $patch_file"; exit 1; }
+          applied_cursor="$RUNNER_TEMP/cursor-applied.patch"
+          test -f "$cjk_patch" || { echo "::error::本仓库缺少 $cjk_patch"; exit 1; }
+          test -f "$cursor_patch" || { echo "::error::本仓库缺少 $cursor_patch"; exit 1; }
 
           applied=0
-          if git -C src apply --check --ignore-whitespace "$patch_file"; then
-            git -C src apply --ignore-whitespace "$patch_file"
-            cp "$patch_file" "$applied_patch"
+          if git -C src apply --check --ignore-whitespace "$cjk_patch" \
+             && git -C src apply --check --ignore-whitespace "$cursor_patch"; then
+            git -C src apply --ignore-whitespace "$cjk_patch"
+            git -C src apply --ignore-whitespace "$cursor_patch"
+            cp "$cjk_patch" "$applied_patch"
+            cp "$cursor_patch" "$applied_cursor"
             applied=1
-            echo "✅ 已应用仓库里的 CJK 修复补丁"
+            echo "✅ 已应用仓库里的两个补丁（中文输入修复 + 高对比软光标）"
           else
             echo "::warning::仓库里的补丁对不上当前上游源码（上游可能改过相关文件），尝试自动重新生成"
             regen="$RUNNER_TEMP/patchregen"
             mkdir -p "$regen"
-            cp "$GITHUB_WORKSPACE/builder/tools/regen-patch.py" "$GITHUB_WORKSPACE/builder/tools/draw-cjk-block.rs" "$regen/"
+            cp "$GITHUB_WORKSPACE/builder/tools/regen-patch.py" \
+               "$GITHUB_WORKSPACE/builder/tools/draw-cjk-block.rs" "$regen/"
             # --src src：直接用已 checkout 的上游源码作基线，不重新下载（省 API 配额）
             if python "$regen/regen-patch.py" "$UPSTREAM_REF" --src src \
                  --out "$regen/cjk.patch" --no-verify; then
-              if git -C src apply --check --ignore-whitespace "$regen/cjk.patch"; then
+              if git -C src apply --check --ignore-whitespace "$regen/cjk.patch" \
+                 && git -C src apply --check --ignore-whitespace "$regen/cursor.patch"; then
                 git -C src apply --ignore-whitespace "$regen/cjk.patch"
+                git -C src apply --ignore-whitespace "$regen/cursor.patch"
                 cp "$regen/cjk.patch" "$applied_patch"
+                cp "$regen/cursor.patch" "$applied_cursor"
                 applied=1
-                echo "✅ 已针对上游 $UPSTREAM_REF 自动重新生成并应用补丁"
-                echo "::notice::本次用的补丁是自动重生成的（仓库里的 overrides/cjk.patch 已过期），请把它更新回仓库"
+                echo "✅ 已针对上游 $UPSTREAM_REF 自动重新生成并应用两个补丁"
+                echo "::notice::本次用的补丁是自动重生成的（仓库里的 overrides/cjk.patch 与 cursor.patch 已过期），请更新回仓库"
               else
                 echo "::error::自动生成的补丁仍无法应用到上游源码"
               fi
@@ -334,20 +351,13 @@ jobs:
           grep -q "zh-hans build patch" src/crates/edit/src/added/draw.rs \
             && echo "   已确认源文件带修改声明（Apache-2.0 §4(b)）" \
             || { echo "::error::补丁里没有修改声明"; exit 1; }
+          grep -q "fn paint_soft_cursor" src/crates/ui-egui/src/canvas/page_cursor.rs \
+            && echo "   已确认软光标就位（白底可见的高对比 I-beam/十字）" \
+            || { echo "::error::软光标补丁应用后未找到 paint_soft_cursor"; exit 1; }
+          grep -q "PDFCRAFT_SOFT_CURSOR" src/crates/ui-egui/src/canvas/page_cursor.rs \
+            && echo "   已确认软光标可通过 PDFCRAFT_SOFT_CURSOR=0 关闭" \
+            || { echo "::error::软光标补丁缺少关闭开关"; exit 1; }
 
-      # 把简体中文界面字体换成本仓库自带的字体（默认鸿蒙 HarmonyOS Sans SC）。
-      # 做法：把字体拷进 craft-fonts 的 fonts/<目录>/，并改写 fonts/manifest.txt ——
-      # 删掉原有的 Hans（简中）行，再追加我们的一行。build.rs 只读 manifest 的前 4 列
-      # （family/style/file/scripts），不校验 sha256，所以这样替换是安全的，且上游
-      # 更新 craft-fonts 后本步骤照样生效（我们只替掉简中那一行，日文等其余行保持上游原样）。
-      # 汉化 Windows 资源管理器的右键菜单，并把菜单图标从软件主 logo（大 P）换成
-      # PDF 文档图标（exe 资源 -2，即文件类型对应的那个小图标；.pdf 的默认图标用的
-      # 就是它）。译法与 craft-i18n zh-hans 词条一致（"Combine files in PdfCraft…"
-      # 词条本身就是 "在 PdfCraft 中合并文件…"）。
-      # 上游把这三组文案写死在 test-msi.ps1 的断言里（MSI 自检逐字比对 Registry 表），
-      # 所以文案和图标改了之后断言常量必须同步 —— 脚本一并处理，任何一处对不上
-      # 就整体失败，绝不留下半更新的两个文件（半更新会在自检处以更难懂的方式挂掉）。
-      # 欢迎页复选框文案不动：上游断言其英文原文，且它是安装器 UI，不是右键菜单项。
       - name: 汉化系统右键菜单并换用文档图标
         shell: bash
         run: |
@@ -784,7 +794,11 @@ jobs:
           # Apache-2.0 第 4(b) 条要求再分发时说明改过哪些文件，把补丁原文给出去最直接。
           if [ -f "$RUNNER_TEMP/cjk-applied.patch" ]; then
             cp "$RUNNER_TEMP/cjk-applied.patch" "$dir/cjk.patch"
-            echo "  随附 cjk.patch（本次构建实际使用的补丁）"
+            echo "  随附 cjk.patch（本次构建实际使用的中文输入修复补丁）"
+          fi
+          if [ -f "$RUNNER_TEMP/cursor-applied.patch" ]; then
+            cp "$RUNNER_TEMP/cursor-applied.patch" "$dir/cursor.patch"
+            echo "  随附 cursor.patch（本次构建实际使用的高对比软光标补丁）"
           fi
 
           cat > "$dir/UNOFFICIAL-BUILD-zh-CN.txt" <<NOTICE_EOF
@@ -815,6 +829,11 @@ jobs:
             apps/pdfcraft/src/main.rs
                 set_startup_update_check(true) → false：启动时不再联网查新版本
                 （只有用户主动点「帮助 → 检查更新」才会联网）。
+            crates/ui-egui/src/canvas/page_cursor.rs
+                新增高对比软光标：白底页面上文本（I-beam）与十字光标由应用自绘
+                "白晕黑线"（部分 Windows 显卡驱动的硬件光标层不画对比度轮廓，导致
+                白色 I-beam 在白纸上不可见，上游 #3935/#5738）。默认启用，
+                设环境变量 PDFCRAFT_SOFT_CURSOR=0 可退回系统光标。
 
           修改的构建配置（不含源码）：
             1) 界面简体中文字体改为随包嵌入 HarmonyOS Sans SC；该字体在字体清单中的
@@ -858,6 +877,12 @@ jobs:
             apps/pdfcraft/src/main.rs
                 set_startup_update_check(true) -> false: the app no longer queries the network
                 for a new release on startup (only when the user asks for it).
+            crates/ui-egui/src/canvas/page_cursor.rs
+                adds a high-contrast soft cursor: over a white page the text (I-beam) and crosshair
+                cursors are drawn by the app ("black line, white halo") -- on some Windows drivers
+                the hardware cursor layer draws no contrast outline, so the white I-beam vanishes
+                on white pages (upstream #3935/#5738). On by default; set PDFCRAFT_SOFT_CURSOR=0
+                to fall back to the system cursors.
 
           Build-configuration changes (no source changes):
             1) The Simplified-Chinese UI font is embedded as HarmonyOS Sans SC, declared with
@@ -945,7 +970,8 @@ jobs:
             echo "| \`LICENSE-MIT.txt\`、\`LICENSE-APACHE.txt\` | 上游许可证全文 |"
             echo "| \`NOTICE.txt\` | 上游版权声明、商标说明与第三方组件许可清单 |"
             echo "| \`UNOFFICIAL-BUILD-zh-CN.txt\` | 本构建的改动说明（非官方声明）|"
-            echo "| \`cjk.patch\` | 本次构建实际使用的源码补丁（可与上游源码比对）|"
+            echo "| \`cjk.patch\` | 中文输入修复补丁（可与上游源码比对）|"
+            echo "| \`cursor.patch\` | 高对比软光标补丁（白底页面上的 I-beam/十字可见性）|"
             echo ""
             echo "便携版 zip 内同时含 \`LICENSE-MIT\`、\`LICENSE-APACHE\`、\`README.md\` 及字体许可文件。"
             echo ""
