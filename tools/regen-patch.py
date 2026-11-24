@@ -4,6 +4,9 @@
 用法：
     python regen-patch.py <tag> [--out <补丁路径>] [--src <上游源码目录>] [--no-verify]
 
+一次运行生成**两个**补丁：cjk.patch（中文输入修复，5 个文件）和 cursor.patch
+（高对比软光标，1 个文件，改自上游 PR #6173；上游合并 #6173 后整个摘除）。
+
 在 GitHub Actions 里：
     python tools/regen-patch.py "$REF" --src src --out "$RUNNER_TEMP/cjk.patch" --no-verify
 
@@ -45,7 +48,15 @@ FILES = [
     'crates/edit/src/added/layout.rs',
     'crates/edit/src/added/draw.rs',
     'apps/pdfcraft/src/main.rs',
+    # The high-contrast soft-cursor patch (adapted from upstream PR #6173) touches one more
+    # file; its diff is split off into cursor.patch in the diff step below, so the two
+    # patches can be regenerated in one run and retired separately (cursor's ends the day
+    # upstream merges #6173).
+    'crates/ui-egui/src/canvas/page_cursor.rs',
 ]
+CURSOR_FILE = 'crates/ui-egui/src/canvas/page_cursor.rs'
+# Files that belong to cjk.patch (everything except the cursor file):
+CJK_PREFIXES = ('crates/edit', 'apps')
 
 
 def get_token():
@@ -89,6 +100,99 @@ def fetch(path, ref):
     if 'content' not in d:
         raise RuntimeError(f'{path}@{ref}: {str(d)[:200]}')
     return base64.b64decode(d['content'])
+
+
+# ─── 软光标补丁的锚点（对准 v0.22.0 的 page_cursor.rs，单文件单锚点）───
+# 与 PR #6173 的差异：指针在 resolve 内部自取（签名不变 → canvas.rs 与上游 tests 零改动）；
+# 默认启用，PDFCRAFT_SOFT_CURSOR=0 可关；不带 PR 的测试 hunk。
+CURSOR_OLD = '''    /// Sets the cursor, once, to the icon of the claim on the highest layer `tool` reaches, and
+    /// returns the tip: that claim's own, or else the description. With no such claim the cursor
+    /// is left as it is. The claims are spent: the next frame starts with none.
+    pub(crate) fn resolve(&mut self, ctx: &egui::Context, tool: QuickTool) -> Option<String> {
+        let PageCursor { claims, description } = std::mem::take(self);
+        let winner = Self::winner(claims, tool);
+        if let Some(w) = &winner {
+            ctx.set_cursor_icon(w.icon);
+        }
+        winner.and_then(|w| w.tip).or(description.map(|(_, text)| text))
+    }
+}
+'''
+
+CURSOR_NEW = '''    /// Sets the cursor, once, to the icon of the claim on the highest layer `tool` reaches, and
+    /// returns the tip: that claim's own, or else the description. With no such claim the cursor
+    /// is left as it is. The claims are spent: the next frame starts with none.
+    pub(crate) fn resolve(&mut self, ctx: &egui::Context, tool: QuickTool) -> Option<String> {
+        // zh-hans build patch (awpde/pdfcraft-zh): the pointer's position is read here rather than
+        // passed in, so this signature stays exactly what upstream and its tests call. See
+        // UNOFFICIAL-BUILD-zh-CN.txt in the release assets.
+        let pointer = ctx.input(|i| i.pointer.latest_pos());
+        self.resolve_with(ctx, tool, pointer, soft_cursor())
+    }
+
+    /// zh-hans build patch (awpde/pdfcraft-zh), adapted from upstream PR #6173: [`PageCursor::resolve`]
+    /// with the high-contrast `soft` cursor on or off. With it on, a text or crosshair cursor over the
+    /// page is drawn by the app, at `pointer`, and the system's is hidden -- on some Windows drivers the
+    /// system's I-beam and crosshair are drawn white, which vanishes on a white page (#3935, #5738).
+    fn resolve_with(&mut self, ctx: &egui::Context, tool: QuickTool, pointer: Option<egui::Pos2>, soft: bool) -> Option<String> {
+        let PageCursor { claims, description } = std::mem::take(self);
+        let winner = Self::winner(claims, tool);
+        if let Some(w) = &winner {
+            match pointer.filter(|_| soft && matches!(w.icon, CursorIcon::Text | CursorIcon::Crosshair)) {
+                Some(at) => {
+                    ctx.set_cursor_icon(CursorIcon::None);
+                    paint_soft_cursor(ctx, w.icon, at);
+                }
+                None => ctx.set_cursor_icon(w.icon),
+            }
+        }
+        winner.and_then(|w| w.tip).or(description.map(|(_, text)| text))
+    }
+}
+
+/// zh-hans build patch (awpde/pdfcraft-zh): whether the app draws its own text and crosshair cursors.
+/// On by default; set `PDFCRAFT_SOFT_CURSOR=0` to fall back to the system's. The system draws them
+/// thin and, on some Windows drivers, white or not at all, so over a white page they can't be seen
+/// (#3935, #5738).
+fn soft_cursor() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("PDFCRAFT_SOFT_CURSOR").map_or(true, |v| v != "0"))
+}
+
+/// Half the length of a soft cursor's arm, in points.
+const SOFT_ARM: f32 = 9.0;
+/// How far an I-beam's serifs reach to each side, in points.
+const SOFT_SERIF: f32 = 3.0;
+
+/// The line segments of the soft cursor for `icon`, centred on `at`: an I-beam with serifs, or a plus.
+fn soft_cursor_segments(icon: CursorIcon, at: egui::Pos2) -> Vec<[egui::Pos2; 2]> {
+    let (x, y) = (at.x, at.y);
+    match icon {
+        CursorIcon::Text => vec![
+            [egui::pos2(x, y - SOFT_ARM), egui::pos2(x, y + SOFT_ARM)],
+            [egui::pos2(x - SOFT_SERIF, y - SOFT_ARM), egui::pos2(x + SOFT_SERIF, y - SOFT_ARM)],
+            [egui::pos2(x - SOFT_SERIF, y + SOFT_ARM), egui::pos2(x + SOFT_SERIF, y + SOFT_ARM)],
+        ],
+        _ => vec![
+            [egui::pos2(x - SOFT_ARM, y), egui::pos2(x + SOFT_ARM, y)],
+            [egui::pos2(x, y - SOFT_ARM), egui::pos2(x, y + SOFT_ARM)],
+        ],
+    }
+}
+
+/// Draws the soft cursor over everything: a black line with a white halo, which shows on a white page
+/// and on a dark one.
+fn paint_soft_cursor(ctx: &egui::Context, icon: CursorIcon, at: egui::Pos2) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("pdfcraft_soft_cursor")));
+    let segments = soft_cursor_segments(icon, at);
+    for segment in &segments {
+        painter.line_segment(*segment, egui::Stroke::new(3.5, egui::Color32::WHITE));
+    }
+    for segment in &segments {
+        painter.line_segment(*segment, egui::Stroke::new(1.5, egui::Color32::BLACK));
+    }
+}
+'''
 
 
 def main():
@@ -256,17 +360,31 @@ fn cjk_has(c: char) -> bool {
         // GitHub for a newer release, which a local-only PDF editor has no reason to do.
         app.set_startup_update_check(false);''',
             'main.rs 关掉启动时的更新检查')
+    # 6) page_cursor.rs：高对比软光标（PR #6173 的单文件变体，默认启用、PDFCRAFT_SOFT_CURSOR=0
+    #    可关）。单文件单锚点；指针在 resolve 内部自取，签名不变，上游 tests 不受影响。
+    replace('crates/ui-egui/src/canvas/page_cursor.rs', CURSOR_OLD, CURSOR_NEW,
+            'page_cursor.rs 软光标')
 
     if errors:
         print('\n'.join(errors))
         print(f'\n共 {len(errors)} 处锚点对不上 —— 上游的改动超出了自动处理范围，需要人工重新设计补丁。')
         return 1
 
-    r = subprocess.run(['git', '-c', 'core.autocrlf=false', 'diff', 'HEAD'], cwd=tmp, capture_output=True)
+    # 两个补丁按 pathspec 拆分：cjk.patch = crates/edit + apps；cursor.patch = crates/ui-egui。
+    r = subprocess.run(['git', '-c', 'core.autocrlf=false', 'diff', 'HEAD', '--', *CJK_PREFIXES],
+                       cwd=tmp, capture_output=True)
     patch = r.stdout.decode('utf-8')
     with open(out, 'w', encoding='utf-8', newline='') as f:
         f.write(patch)
     print(f'\n补丁: {out}  {len(patch)} 字节, {patch.count(chr(10) + "@@")} hunk, CR={patch.count(chr(13))}')
+
+    rc = subprocess.run(['git', '-c', 'core.autocrlf=false', 'diff', 'HEAD', '--', CURSOR_FILE],
+                        cwd=tmp, capture_output=True)
+    patch_c = rc.stdout.decode('utf-8')
+    out_c = os.path.join(os.path.dirname(out), 'cursor.patch')
+    with open(out_c, 'w', encoding='utf-8', newline='') as f:
+        f.write(patch_c)
+    print(f'补丁: {out_c}  {len(patch_c)} 字节, {patch_c.count(chr(10) + "@@")} hunk, CR={patch_c.count(chr(13))}')
 
     if not do_verify:
         return 0
@@ -290,10 +408,16 @@ fn cjk_has(c: char) -> bool {
     env2 = dict(os.environ, GIT_AUTHOR_NAME='x', GIT_AUTHOR_EMAIL='a@b.c',
                 GIT_COMMITTER_NAME='x', GIT_COMMITTER_EMAIL='a@b.c')
     subprocess.run(['git', 'commit', '-qm', 'base'], check=True, env=env2)
+    ok = True
     r2 = subprocess.run(['git', '-c', 'core.autocrlf=false', 'apply', '--check', out],
                         capture_output=True, text=True)
-    print('git apply --check:', '通过' if r2.returncode == 0 else '失败\n' + r2.stderr[:600])
-    return 0 if r2.returncode == 0 else 1
+    print('cjk apply --check:', '通过' if r2.returncode == 0 else '失败\n' + r2.stderr[:600])
+    ok = ok and r2.returncode == 0
+    rc2 = subprocess.run(['git', '-c', 'core.autocrlf=false', 'apply', '--check', out_c],
+                         capture_output=True, text=True)
+    print('cursor apply --check:', '通过' if rc2.returncode == 0 else '失败\n' + rc2.stderr[:600])
+    ok = ok and rc2.returncode == 0
+    return 0 if ok else 1
 
 
 if __name__ == '__main__':
